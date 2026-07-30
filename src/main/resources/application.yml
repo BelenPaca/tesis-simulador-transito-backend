@@ -1,0 +1,60 @@
+server:
+  port: ${PORT:5173}
+
+app:
+  key: ${APP_KEY}
+  aimodel: ${AI_MODEL:gemini-3.1-flash-lite}
+  frontend-url: ${FRONTEND_URL:http://localhost:5174}
+
+spring:
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5433/uce_chat}
+    username: ${DATABASE_USER:postgres}
+    password: ${DATABASE_PASSWORD:password}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: ${SHOW_SQL:false}
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+  docker:
+    compose:
+      enabled: false
+
+  ai:
+    model:
+      embedding: transformers
+    embedding:
+      transformer:
+        onnx:
+          model-uri: classpath:models/model.onnx
+        tokenizer:
+          uri: classpath:models/tokenizer.json
+    vectorstore:
+      qdrant:
+        host: ${QDRANT_HOST:localhost}
+        port: ${QDRANT_PORT:6334}
+        api-key: ${QDRANT_API_KEY:}
+        use-tls: ${QDRANT_USE_TLS:false}
+        collection-name: springrag
+        initialize-schema: true
+
+    google:
+      genai:
+        api-key: ${app.key}
+        chat:
+          enabled: true
+          options:
+            model: ${app.aimodel}
+
+logging:
+  level:
+    org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor: ${LOG_LEVEL:WARN}
