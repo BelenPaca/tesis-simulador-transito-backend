@@ -12,6 +12,5 @@ bin/
 .DS_Store
 qdrant_storage/
 inbound/*.pdf
-*.onnx
-src/main/resources/models/model.onnx
+
 
