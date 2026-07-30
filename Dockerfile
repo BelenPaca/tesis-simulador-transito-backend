@@ -10,8 +10,9 @@ RUN chmod +x gradlew && ./gradlew dependencies --no-daemon || true
 # Copiar código fuente
 COPY src/ src/
 
-# Descargar model.onnx si no existe en el contenedor (para Render / CI)
-RUN mkdir -p src/main/resources/models && \
+# Instalar curl y descargar model.onnx si no existe en el contenedor (para Render / CI)
+RUN apt-get update && apt-get install -y curl && \
+    mkdir -p src/main/resources/models && \
     if [ ! -f src/main/resources/models/model.onnx ]; then \
       curl -L -o src/main/resources/models/model.onnx "https://github.com/BelenPaca/tesis-simulador-transito-backend/releases/download/v1.0.0/model.onnx"; \
     fi
