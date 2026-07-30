@@ -20,4 +20,5 @@ COPY --from=builder /app/build/libs/*.jar app.jar
 RUN mkdir -p /app/inbound
 
 EXPOSE ${PORT:-8080}
-ENTRYPOINT ["java", "-jar", "app.jar"]
+# Configuración optimizada de memoria para Render (límite 512MB RAM)
+ENTRYPOINT ["java", "-Xms128m", "-Xmx220m", "-XX:+UseSerialGC", "-jar", "app.jar"]
