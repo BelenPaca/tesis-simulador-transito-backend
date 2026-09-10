@@ -33,4 +33,10 @@ public class ConversationController {
         conversationService.deleteConversation(id);
         return ResponseEntity.noContent().build();
     }
+
+    @DeleteMapping
+    public ResponseEntity<Void> deleteAllConversations() {
+        conversationService.deleteAllConversations();
+        return ResponseEntity.noContent().build();
+    }
 }

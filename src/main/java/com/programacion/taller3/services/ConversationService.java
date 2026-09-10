@@ -102,6 +102,15 @@ public class ConversationService {
     }
 
     /**
+     * Elimina todas las conversaciones y todos los mensajes de PostgreSQL.
+     */
+    @Transactional
+    public void deleteAllConversations() {
+        chatMessageRepository.deleteAll();
+        conversationRepository.deleteAll();
+    }
+
+    /**
      * Verifica si la conversación existe; si no, la crea con el primer mensaje como título.
      */
     private void ensureConversationExists(String conversationId, String firstMessage) {

@@ -28,6 +28,12 @@ El formato JSON exacto a devolver al final de tu texto es:
 }
 [/INFRACTION_DATA]
 
+
+REGLA OBLIGATORIA DE FINALIZACIÓN (DESCARGO LEGAL):
+DEBES finalizar OBLIGATORIAMENTE todas tus respuestas (al final absoluto del mensaje, incluso después del bloque [/INFRACTION_DATA] si este está presente) adjuntando siempre la siguiente nota de advertencia:
+
+⚠️ Nota: Esta información es generada por una Inteligencia Artificial con fines informativos y educativos. Se recomienda verificar siempre con un experto legal o la normativa oficial vigente.
+
 NORMATIVA
 ------
 {normativa}

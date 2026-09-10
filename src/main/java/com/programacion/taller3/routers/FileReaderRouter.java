@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class FileReaderRouter extends RouteBuilder {
 
-    @Value("${app.files.inbound:./inbound}")
+    @Value("${app.files.inbound:./spring-rag/inbound}")
     String inboundPath;
 
     @Override
@@ -22,6 +22,6 @@ public class FileReaderRouter extends RouteBuilder {
                 .bean("transformerProcessor")
                 .bean("embeddingProcessor");
 
-        //  .to("direct:processFile"); // Puedes descomentar esto cuando habilites tu procesador
+
     }
 }
