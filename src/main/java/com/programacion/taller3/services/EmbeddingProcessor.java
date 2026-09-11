@@ -21,7 +21,8 @@ public class EmbeddingProcessor {
     public void procesar(List<Document> documents) {
         System.out.println("EmbeddingProcessor: total de fragmentos a procesar: " + documents.size());
 
-        int batchSize = 10;
+        // Lotes de 50 fragmentos para procesar hasta 5x más rápido sin saturar la cuota
+        int batchSize = 50;
         int total = documents.size();
 
         for (int i = 0; i < total; i += batchSize) {
@@ -36,14 +37,13 @@ public class EmbeddingProcessor {
                 try {
                     vectorStore.add(batch);
                     success = true;
-                    // Pausa de cortesía entre lotes para no saturar el Rate Limit de Google AI
-                    Thread.sleep(1200);
+                    // Pausa breve de 500ms entre lotes grandes
+                    Thread.sleep(500);
                 } catch (Exception e) {
                     retries++;
                     System.err.println("Reintentando lote (" + retries + "/5) por cuota/espera: " + e.getMessage());
                     try {
-                        // Esperar 4 segundos antes de reintentar si Google responde 429
-                        Thread.sleep(4000L * retries);
+                        Thread.sleep(3000L * retries);
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                     }
