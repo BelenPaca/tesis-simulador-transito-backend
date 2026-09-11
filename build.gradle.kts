@@ -35,9 +35,6 @@ dependencies {
     implementation("org.springframework.ai:spring-ai-starter-vector-store-qdrant")
     implementation("org.springframework.ai:spring-ai-vector-store-advisor")
 
-    // --Embeddings
-    implementation("org.springframework.ai:spring-ai-starter-model-transformers")
-
     // Eips
     implementation("org.apache.camel.springboot:camel-spring-boot-starter:4.20.0")
     implementation("org.apache.camel.springboot:camel-file-starter:4.20.0")
@@ -47,8 +44,4 @@ dependencyManagement {
     imports {
         mavenBom("org.springframework.ai:spring-ai-bom:${property("springAiVersion")}")
     }
-}
-
-configurations.all {
-    exclude(group = "ai.djl.pytorch")
 }
