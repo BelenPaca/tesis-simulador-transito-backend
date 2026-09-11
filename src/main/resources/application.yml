@@ -47,9 +47,10 @@ spring:
           options:
             model: ${app.aimodel}
         embedding:
-          enabled: true
-          options:
-            model: text-embedding-004
+          api-key: ${app.key}
+          text:
+            options:
+              model: text-embedding-004
 
 logging:
   level:
