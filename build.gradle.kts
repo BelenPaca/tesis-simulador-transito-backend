@@ -21,6 +21,7 @@ extra["springAiVersion"] = "2.0.0"
 
 dependencies {
     implementation("org.springframework.ai:spring-ai-starter-model-google-genai")
+    implementation("org.springframework.ai:spring-ai-google-genai-embedding")
 
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
