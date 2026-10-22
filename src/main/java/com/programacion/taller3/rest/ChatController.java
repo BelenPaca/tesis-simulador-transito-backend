@@ -81,7 +81,7 @@ public class ChatController {
         // Buscar manualmente en Qdrant los documentos RAG
         var searchRequest = SearchRequest.builder()
                 .query(message)
-                .topK(6)
+                .topK(3)
                 .filterExpression("categoria == 'documento'")
                 .build();
         var documents = vectorStore.similaritySearch(searchRequest);
