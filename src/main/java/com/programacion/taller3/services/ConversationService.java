@@ -33,28 +33,52 @@ public class ConversationService {
      */
     @Transactional
     public Conversation createConversation(String id, String title) {
+        return createConversation(id, title, null);
+    }
+
+    @Transactional
+    public Conversation createConversation(String id, String title, String userId) {
         LocalDateTime createdAt = LocalDateTime.now();
 
         if (title == null || title.isBlank()) {
             title = "Nueva conversación";
         }
 
-        ConversationEntity entity = new ConversationEntity(id, title, createdAt);
+        ConversationEntity entity = new ConversationEntity(id, title, createdAt, userId);
         conversationRepository.save(entity);
 
-        return new Conversation(id, title, createdAt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME), List.of());
+        return new Conversation(id, title, createdAt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME), List.of(), userId);
     }
 
     /**
-     * Lista todas las conversaciones guardadas.
+     * Lista todas las conversaciones activas guardadas.
      */
     public List<Conversation> listConversations() {
-        return conversationRepository.findAllByOrderByCreatedAtDesc().stream()
+        return conversationRepository.findActiveConversations().stream()
                 .map(entity -> new Conversation(
                         entity.getId(),
                         entity.getTitle(),
                         entity.getCreatedAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
-                        List.of()
+                        List.of(),
+                        entity.getUserId()
+                ))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Lista las conversaciones activas de un usuario específico (correo o guest_id).
+     */
+    public List<Conversation> listConversations(String userId) {
+        if (userId == null || userId.isBlank()) {
+            return listConversations();
+        }
+        return conversationRepository.findActiveByUserId(userId).stream()
+                .map(entity -> new Conversation(
+                        entity.getId(),
+                        entity.getTitle(),
+                        entity.getCreatedAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                        List.of(),
+                        entity.getUserId()
                 ))
                 .collect(Collectors.toList());
     }
@@ -65,9 +89,14 @@ public class ConversationService {
      */
     @Transactional
     public void saveMessage(String conversationId, String role, String content) {
+        saveMessage(conversationId, role, content, null);
+    }
+
+    @Transactional
+    public void saveMessage(String conversationId, String role, String content, String userId) {
         // Auto-crear conversación si es el primer mensaje del usuario
         if ("user".equals(role)) {
-            ensureConversationExists(conversationId, content);
+            ensureConversationExists(conversationId, content, userId);
         }
 
         ChatMessageEntity msg = new ChatMessageEntity(
@@ -93,32 +122,70 @@ public class ConversationService {
     }
 
     /**
-     * Elimina una conversación y todos sus mensajes de PostgreSQL.
+     * Borrado lógico: Marca la conversación como inactiva (active = false).
+     * Los mensajes y el registro permanecen en PostgreSQL para auditoría y tesis.
      */
     @Transactional
     public void deleteConversation(String conversationId) {
-        chatMessageRepository.deleteByConversationId(conversationId);
-        conversationRepository.deleteById(conversationId);
+        conversationRepository.findById(conversationId).ifPresent(entity -> {
+            entity.setActive(false);
+            conversationRepository.save(entity);
+        });
     }
 
     /**
-     * Elimina todas las conversaciones y todos los mensajes de PostgreSQL.
+     * Borrado lógico: Marca todas las conversaciones como inactivas.
      */
     @Transactional
     public void deleteAllConversations() {
-        chatMessageRepository.deleteAll();
-        conversationRepository.deleteAll();
+        List<ConversationEntity> all = conversationRepository.findAll();
+        for (ConversationEntity c : all) {
+            c.setActive(false);
+        }
+        conversationRepository.saveAll(all);
+    }
+
+    /**
+     * Borrado lógico: Marca todas las conversaciones del usuario como inactivas.
+     */
+    @Transactional
+    public void deleteAllConversations(String userId) {
+        if (userId == null || userId.isBlank()) {
+            deleteAllConversations();
+            return;
+        }
+        List<ConversationEntity> userConvs = conversationRepository.findByUserIdOrderByCreatedAtDesc(userId);
+        for (ConversationEntity c : userConvs) {
+            c.setActive(false);
+        }
+        conversationRepository.saveAll(userConvs);
+    }
+
+    /**
+     * Asigna o migra una conversación existente al usuario que inició sesión (adopción de chat).
+     */
+    @Transactional
+    public void assignConversationToUser(String conversationId, String userId) {
+        if (conversationId == null || userId == null || userId.isBlank()) return;
+        conversationRepository.findById(conversationId).ifPresent(entity -> {
+            entity.setUserId(userId);
+            conversationRepository.save(entity);
+        });
     }
 
     /**
      * Verifica si la conversación existe; si no, la crea con el primer mensaje como título.
      */
     private void ensureConversationExists(String conversationId, String firstMessage) {
+        ensureConversationExists(conversationId, firstMessage, null);
+    }
+
+    private void ensureConversationExists(String conversationId, String firstMessage, String userId) {
         if (!conversationRepository.existsById(conversationId)) {
             String title = firstMessage.length() > 50
                     ? firstMessage.substring(0, 50) + "..."
                     : firstMessage;
-            createConversation(conversationId, title);
+            createConversation(conversationId, title, userId);
         }
     }
 }

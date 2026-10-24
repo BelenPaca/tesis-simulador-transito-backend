@@ -16,6 +16,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
@@ -66,17 +67,22 @@ public class ChatController {
 
 
     @PostMapping(path = "/api/chat", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> streamChat(@RequestBody ChatRequest request) {
+    public Flux<ServerSentEvent<String>> streamChat(
+            @RequestBody ChatRequest request,
+            @RequestHeader(value = "X-User-Id", required = false) String headerUserId) {
 
         var message = request.message();
         var conversationId = request.conversationId() != null ? request.conversationId() : UUID.randomUUID().toString();
+        var userId = request.userId() != null && !request.userId().isBlank()
+                ? request.userId()
+                : (headerUserId != null && !headerUserId.isBlank() ? headerUserId : "invitado");
 
         if (message == null || message.isBlank()) {
             throw new IllegalArgumentException("El mensaje no puede estar vacío");
         }
 
         // Guardar mensaje del usuario en PostgreSQL para la UI
-        conversationService.saveMessage(conversationId, "user", message);
+        conversationService.saveMessage(conversationId, "user", message, userId);
 
         // Buscar manualmente en Qdrant los documentos RAG
         var searchRequest = SearchRequest.builder()

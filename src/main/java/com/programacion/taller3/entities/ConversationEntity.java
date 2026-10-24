@@ -14,14 +14,23 @@ public class ConversationEntity {
     private String id;
     private String title;
     private LocalDateTime createdAt;
+    private String userId;
+    private Boolean active = true;
 
     public ConversationEntity() {
+        this.active = true;
     }
 
     public ConversationEntity(String id, String title, LocalDateTime createdAt) {
+        this(id, title, createdAt, null);
+    }
+
+    public ConversationEntity(String id, String title, LocalDateTime createdAt, String userId) {
         this.id = id;
         this.title = title;
         this.createdAt = createdAt;
+        this.userId = userId;
+        this.active = true;
     }
 
     public String getId() {
@@ -46,5 +55,21 @@ public class ConversationEntity {
 
     public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public String getUserId() {
+        return userId;
+    }
+
+    public void setUserId(String userId) {
+        this.userId = userId;
+    }
+
+    public Boolean getActive() {
+        return active != null ? active : true;
+    }
+
+    public void setActive(Boolean active) {
+        this.active = active;
     }
 }

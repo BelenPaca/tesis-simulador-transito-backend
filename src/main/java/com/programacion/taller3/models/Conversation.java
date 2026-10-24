@@ -6,5 +6,10 @@ public record Conversation(
     String id,
     String title,
     String createdAt,
-    List<ChatMessage> messages
-) {}
+    List<ChatMessage> messages,
+    String userId
+) {
+    public Conversation(String id, String title, String createdAt, List<ChatMessage> messages) {
+        this(id, title, createdAt, messages, null);
+    }
+}

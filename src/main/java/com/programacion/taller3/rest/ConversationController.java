@@ -19,13 +19,26 @@ public class ConversationController {
     }
 
     @GetMapping
-    public ResponseEntity<List<Conversation>> listConversations() {
+    public ResponseEntity<List<Conversation>> listConversations(@RequestHeader(value = "X-User-Id", required = false) String userId) {
+        if (userId != null && !userId.isBlank()) {
+            return ResponseEntity.ok(conversationService.listConversations(userId));
+        }
         return ResponseEntity.ok(conversationService.listConversations());
     }
 
     @GetMapping("/{id}/messages")
     public ResponseEntity<List<ChatMessage>> getMessages(@PathVariable String id) {
         return ResponseEntity.ok(conversationService.getMessages(id));
+    }
+
+    @PutMapping("/{id}/assign-user")
+    public ResponseEntity<Void> assignUser(
+            @PathVariable String id,
+            @RequestHeader(value = "X-User-Id", required = false) String userId) {
+        if (userId != null && !userId.isBlank()) {
+            conversationService.assignConversationToUser(id, userId);
+        }
+        return ResponseEntity.ok().build();
     }
 
     @DeleteMapping("/{id}")
@@ -35,8 +48,12 @@ public class ConversationController {
     }
 
     @DeleteMapping
-    public ResponseEntity<Void> deleteAllConversations() {
-        conversationService.deleteAllConversations();
+    public ResponseEntity<Void> deleteAllConversations(@RequestHeader(value = "X-User-Id", required = false) String userId) {
+        if (userId != null && !userId.isBlank()) {
+            conversationService.deleteAllConversations(userId);
+        } else {
+            conversationService.deleteAllConversations();
+        }
         return ResponseEntity.noContent().build();
     }
 }
