@@ -61,7 +61,7 @@ public class DocumentUploadController {
             }
 
             // 1. Leer con TikaDocumentReader y etiquetar categoría
-            List<Document> rawDocs = fileProcessor.procesar(tempFile);
+            List<Document> rawDocs = fileProcessor.procesar(tempFile, originalFilename);
 
             // 2. Dividir en chunks
             List<Document> splitDocs = transformerProcessor.procesar(rawDocs);

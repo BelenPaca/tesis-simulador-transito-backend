@@ -85,15 +85,41 @@ public class ChatController {
         conversationService.saveMessage(conversationId, "user", message, userId);
 
         // Buscar manualmente en Qdrant los documentos RAG
-        var searchRequest = SearchRequest.builder()
-                .query(message)
-                .topK(3)
-                .filterExpression("categoria == 'documento'")
-                .build();
-        var documents = vectorStore.similaritySearch(searchRequest);
+        String attachedFile = request.attachedFileName();
+        java.util.List<Document> documents;
+
+        if (attachedFile != null && !attachedFile.isBlank()) {
+            String safeFile = attachedFile.replace("'", "");
+            var searchWithFile = SearchRequest.builder()
+                    .query(message)
+                    .topK(4)
+                    .filterExpression("categoria == 'documento' && (source == '" + safeFile + "' || file_name == '" + safeFile + "')")
+                    .build();
+            documents = vectorStore.similaritySearch(searchWithFile);
+
+            if (documents.isEmpty()) {
+                documents = vectorStore.similaritySearch(SearchRequest.builder()
+                        .query(message)
+                        .topK(3)
+                        .filterExpression("categoria == 'documento'")
+                        .build());
+            }
+        } else {
+            var searchRequest = SearchRequest.builder()
+                    .query(message)
+                    .topK(3)
+                    .filterExpression("categoria == 'documento'")
+                    .build();
+            documents = vectorStore.similaritySearch(searchRequest);
+        }
+
         String context = documents.stream()
                 .map(Document::getText)
                 .reduce("", (a, b) -> a + "\n" + b);
+
+        if (attachedFile != null && !attachedFile.isBlank()) {
+            context = "=== CONTEXTO DEL DOCUMENTO ADJUNTO POR EL USUARIO (" + attachedFile + ") ===\n" + context;
+        }
 
         String systemMessage;
         try {
