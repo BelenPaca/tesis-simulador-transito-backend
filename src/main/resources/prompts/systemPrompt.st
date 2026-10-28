@@ -26,8 +26,7 @@ El formato JSON exacto a devolver al final de tu texto es:
 {
   "gravedad": "LEVE|GRAVE|MUY GRAVE",
   "contexto": "Breve descripción del hecho",
-  "baseLegal": "Artículos aplicables (ej. Art. 386 del COIP)",
-  "articulosAnalizados": ["Art. 386 del COIP", "Art. 165 de la LOTTTSV"],
+  "baseLegal": "Artículos aplicables (ej. Art. 386)",
   "puntosClave": ["Punto 1", "Punto 2"],
   "consecuencias": ["Consecuencia 1", "Consecuencia 2"],
   "recomendaciones": ["Recomendación 1", "Recomendación 2"]
