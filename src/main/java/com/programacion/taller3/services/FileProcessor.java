@@ -1,5 +1,7 @@
 package com.programacion.taller3.services;
 
+import org.apache.camel.Handler;
+import org.apache.camel.Header;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.reader.tika.TikaDocumentReader;
 import org.springframework.core.io.FileSystemResource;
@@ -18,7 +20,8 @@ public class FileProcessor {
         return procesar(file, file != null ? file.getName() : "documento.pdf");
     }
 
-    public List<Document> procesar(File file, String originalFilename) {
+    @Handler
+    public List<Document> procesar(File file, @Header("CamelFileName") String originalFilename) {
         Resource resource = new FileSystemResource(file);
         TikaDocumentReader reader = new TikaDocumentReader(resource);
         List<Document> documents = reader.get();

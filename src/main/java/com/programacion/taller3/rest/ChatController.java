@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
 import java.nio.charset.StandardCharsets;
+import java.util.*;
 import java.util.Base64;
 import java.util.UUID;
 
@@ -92,7 +93,7 @@ public class ChatController {
             String safeFile = attachedFile.replace("'", "");
             var searchWithFile = SearchRequest.builder()
                     .query(message)
-                    .topK(4)
+                    .topK(6)
                     .filterExpression("categoria == 'documento' && (source == '" + safeFile + "' || file_name == '" + safeFile + "')")
                     .build();
             documents = vectorStore.similaritySearch(searchWithFile);
@@ -100,14 +101,14 @@ public class ChatController {
             if (documents.isEmpty()) {
                 documents = vectorStore.similaritySearch(SearchRequest.builder()
                         .query(message)
-                        .topK(3)
+                        .topK(6)
                         .filterExpression("categoria == 'documento'")
                         .build());
             }
         } else {
             var searchRequest = SearchRequest.builder()
                     .query(message)
-                    .topK(3)
+                    .topK(6)
                     .filterExpression("categoria == 'documento'")
                     .build();
             documents = vectorStore.similaritySearch(searchRequest);
@@ -152,11 +153,38 @@ public class ChatController {
                         .build()
                 );
 
+        // Construir fuentes reales desde Qdrant
+        List<Map<String, String>> realSources = buildLegalSources(documents);
+        String sourcesJson;
+        try {
+            sourcesJson = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(realSources);
+        } catch (Exception e) {
+            sourcesJson = "[]";
+        }
+        final String finalSourcesJson = sourcesJson;
+
+        // Chunk con las fuentes legales reales de Qdrant al final del stream de tokens
+        String sourcesChunk = (!finalSourcesJson.isBlank() && !finalSourcesJson.equals("[]"))
+                ? "\n[LEGAL_SOURCES]" + finalSourcesJson + "[/LEGAL_SOURCES]"
+                : "";
+
+        Flux<ServerSentEvent<String>> sourcesFlux = sourcesChunk.isBlank()
+                ? Flux.empty()
+                : Flux.just(ServerSentEvent.<String>builder()
+                        .event("token")
+                        .data(Base64.getEncoder().encodeToString(sourcesChunk.getBytes(StandardCharsets.UTF_8)))
+                        .build()
+                );
+
         // Cuando el stream termine, guardar la respuesta del asistente en PostgreSQL para la UI
         Flux<ServerSentEvent<String>> done = Flux.defer(() -> {
             if (!fullResponse.isEmpty()) {
                 try {
-                    conversationService.saveMessage(conversationId, "assistant", fullResponse.toString());
+                    String toSave = fullResponse.toString();
+                    if (!sourcesChunk.isBlank() && !toSave.contains("[LEGAL_SOURCES]")) {
+                        toSave += sourcesChunk;
+                    }
+                    conversationService.saveMessage(conversationId, "assistant", toSave);
                 } catch (Exception e) {
                     System.err.println("Error guardando respuesta del asistente: " + e.getMessage());
                 }
@@ -169,7 +197,7 @@ public class ChatController {
             );
         });
 
-        return tokens.concatWith(done)
+        return tokens.concatWith(sourcesFlux).concatWith(done)
                 .onErrorResume(error -> Flux.just(
                                 ServerSentEvent.<String>builder()
                                         .event("error")
@@ -177,5 +205,84 @@ public class ChatController {
                                         .build()
                         )
                 );
+    }
+
+    private List<Map<String, String>> buildLegalSources(List<Document> documents) {
+        List<Map<String, String>> sources = new ArrayList<>();
+        if (documents == null || documents.isEmpty()) {
+            return sources;
+        }
+
+        Set<String> seen = new HashSet<>();
+        for (Document doc : documents) {
+            Map<String, Object> meta = doc.getMetadata();
+            String rawName = "";
+            if (meta != null) {
+                if (meta.containsKey("original_filename") && meta.get("original_filename") != null) {
+                    rawName = meta.get("original_filename").toString();
+                } else if (meta.containsKey("file_name") && meta.get("file_name") != null) {
+                    rawName = meta.get("file_name").toString();
+                } else if (meta.containsKey("source") && meta.get("source") != null) {
+                    rawName = meta.get("source").toString();
+                }
+            }
+
+            if (rawName == null || rawName.isBlank()) {
+                rawName = "Normativa de Tránsito";
+            }
+
+            String badge = rawName;
+            String title = rawName;
+            String lower = rawName.toLowerCase();
+
+            if (lower.contains("reglamento")) {
+                badge = "Reglamento LOTTTSV";
+                title = "Reglamento General para la Aplicación de la LOTTTSV";
+            } else if (lower.contains("coip")) {
+                badge = "COIP Tránsito";
+                title = "Código Orgánico Integral Penal (COIP)";
+            } else if (lower.contains("lotttsv") || lower.contains("transporte") || lower.contains("transito")) {
+                badge = "LOTTTSV";
+                title = "Ley Orgánica de Transporte Terrestre, Tránsito y Seguridad Vial";
+            } else if (lower.contains("trabajo")) {
+                badge = "Código del Trabajo";
+                title = "Código del Trabajo del Ecuador";
+            } else if (lower.contains("constitucion") || lower.contains("constitución")) {
+                badge = "Constitución";
+                title = "Constitución de la República del Ecuador";
+            } else {
+                badge = rawName.replaceAll("(?i)\\.(pdf|docx?|txt)$", "");
+                title = rawName;
+            }
+
+            String docText = doc.getText() != null ? doc.getText() : "";
+            String articleFound = "";
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?:Arts?|Art[ií]culos?)\\.?\\s*(\\d+)", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(docText);
+            if (m.find()) {
+                articleFound = "Art. " + m.group(1);
+            }
+
+            String snippet = docText.replaceAll("\\s+", " ").trim();
+            if (snippet.length() > 220) {
+                int dot = snippet.indexOf('.', 120);
+                if (dot != -1 && dot < 240) {
+                    snippet = snippet.substring(0, dot + 1);
+                } else {
+                    snippet = snippet.substring(0, 220) + "...";
+                }
+            }
+
+            String key = badge + "|" + articleFound;
+            if (!seen.contains(key) && !snippet.isBlank()) {
+                seen.add(key);
+                Map<String, String> item = new HashMap<>();
+                item.put("badge", badge);
+                item.put("title", title);
+                item.put("article", articleFound.isBlank() ? badge : articleFound);
+                item.put("extract", snippet);
+                sources.add(item);
+            }
+        }
+        return sources;
     }
 }
