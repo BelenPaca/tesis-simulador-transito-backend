@@ -1,0 +1,34 @@
+name: Sincronizar Leyes con Qdrant y Neon
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'normativa/**'
+      - 'scripts/sincronizar_leyes.py'
+  workflow_dispatch:
+
+jobs:
+  sincronizar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Descargar código del repositorio
+        uses: actions/checkout@v4
+
+      - name: 2. Instalar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 3. Instalar dependencias
+        run: pip install google-genai qdrant-client psycopg2-binary
+
+      - name: 4. Ejecutar sincronización inteligente
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+          QDRANT_COLLECTION: ${{ secrets.QDRANT_COLLECTION || 'springrag' }}
+          NEON_DB_URL: ${{ secrets.NEON_DB_URL }}
+        run: python scripts/sincronizar_leyes.py
+
