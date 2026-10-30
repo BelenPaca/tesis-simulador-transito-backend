@@ -162,36 +162,11 @@ public class ChatController {
             // Solo buscar leyes oficiales complementarias si la consulta no es una inspección pura del documento
             boolean isPureDocInspection = isDocumentInspectionQuery(message);
             if (!isPureDocInspection) {
-                try {
-                    var searchLaws = SearchRequest.builder()
-                            .query(effectiveQuery)
-                            .topK(5)
-                            .filterExpression("tipo == 'ley_oficial'")
-                            .build();
-                    officialLawDocs = vectorStore.similaritySearch(searchLaws);
-                } catch (Exception e) {
-                    System.err.println("Nota en búsqueda de leyes oficiales filtradas: " + e.getMessage());
-                }
+                officialLawDocs = retrieveOfficialLawsWithDecomposition(effectiveQuery);
             }
         } else {
-            // Consulta normal: Solo leyes oficiales
-            try {
-                var searchRequest = SearchRequest.builder()
-                        .query(effectiveQuery)
-                        .topK(6)
-                        .filterExpression("tipo == 'ley_oficial'")
-                        .build();
-                officialLawDocs = vectorStore.similaritySearch(searchRequest);
-            } catch (Exception e) {
-                System.err.println("Nota en búsqueda de leyes oficiales: " + e.getMessage());
-            }
-
-            if (officialLawDocs.isEmpty()) {
-                officialLawDocs = vectorStore.similaritySearch(SearchRequest.builder()
-                        .query(effectiveQuery)
-                        .topK(6)
-                        .build());
-            }
+            // Consulta normal: Búsqueda de leyes oficiales con Query Decomposition y deduplicación
+            officialLawDocs = retrieveOfficialLawsWithDecomposition(effectiveQuery);
         }
 
         // 4. Construir fuentes legales de Qdrant
@@ -315,6 +290,131 @@ public class ChatController {
             }
         }
         return currentMessage;
+    }
+
+    /**
+     * Descompone consultas compuestas en sub-consultas enfocadas y busca en Qdrant
+     * deduplicando fragmentos por ID y texto para garantizar cobertura completa (alcohol, velocidad, celular, etc.).
+     */
+    private List<Document> retrieveOfficialLawsWithDecomposition(String effectiveQuery) {
+        List<String> subQueries = decomposeQueryIfCompound(effectiveQuery);
+        List<Document> combined = new ArrayList<>();
+        Set<String> seenIdentifiers = new HashSet<>();
+
+        if (subQueries.size() <= 1) {
+            // Consulta simple o directa: Búsqueda tradicional con topK amplio
+            try {
+                var search = SearchRequest.builder()
+                        .query(effectiveQuery)
+                        .topK(10)
+                        .filterExpression("tipo == 'ley_oficial'")
+                        .build();
+                List<Document> docs = vectorStore.similaritySearch(search);
+                if (docs.isEmpty()) {
+                    docs = vectorStore.similaritySearch(SearchRequest.builder().query(effectiveQuery).topK(10).build());
+                }
+                return docs;
+            } catch (Exception e) {
+                System.err.println("Fallo búsqueda simple de leyes oficiales: " + e.getMessage());
+                try {
+                    return vectorStore.similaritySearch(SearchRequest.builder().query(effectiveQuery).topK(10).build());
+                } catch (Exception ex) {
+                    return List.of();
+                }
+            }
+        }
+
+        // Consulta compuesta: Ejecutar búsqueda independiente por cada intención
+        System.out.println("Consulta compuesta detectada. Ejecutando Query Decomposition con " + subQueries.size() + " sub-consultas: " + subQueries);
+        for (String subQ : subQueries) {
+            try {
+                var search = SearchRequest.builder()
+                        .query(subQ)
+                        .topK(4)
+                        .filterExpression("tipo == 'ley_oficial'")
+                        .build();
+                List<Document> docs = vectorStore.similaritySearch(search);
+                if (docs.isEmpty()) {
+                    docs = vectorStore.similaritySearch(SearchRequest.builder().query(subQ).topK(4).build());
+                }
+
+                for (Document d : docs) {
+                    String docText = d.getText() != null ? d.getText().trim() : "";
+                    String snippetKey = docText.length() > 60 ? docText.substring(0, 60) : docText;
+                    String idKey = d.getId() != null ? d.getId() : snippetKey;
+
+                    if (seenIdentifiers.add(idKey)) {
+                        combined.add(d);
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Error en sub-consulta [" + subQ + "]: " + e.getMessage());
+            }
+        }
+
+        // Fallback de seguridad: Si por alguna razón la descomposición no trajo suficientes documentos, complementar con búsqueda directa
+        if (combined.size() < 4) {
+            try {
+                List<Document> fallbackDocs = vectorStore.similaritySearch(SearchRequest.builder().query(effectiveQuery).topK(10).build());
+                for (Document d : fallbackDocs) {
+                    String docText = d.getText() != null ? d.getText().trim() : "";
+                    String snippetKey = docText.length() > 60 ? docText.substring(0, 60) : docText;
+                    String idKey = d.getId() != null ? d.getId() : snippetKey;
+                    if (seenIdentifiers.add(idKey)) {
+                        combined.add(d);
+                    }
+                }
+            } catch (Exception ex) {
+                System.err.println("Fallback general de leyes: " + ex.getMessage());
+            }
+        }
+
+        System.out.println("Total fragmentos deduplicados para marco legal oficial: " + combined.size());
+        return combined;
+    }
+
+    /**
+     * Identifica si la consulta combina múltiples temas legales y la divide en sub-consultas enfocadas.
+     */
+    private List<String> decomposeQueryIfCompound(String query) {
+        if (query == null || query.isBlank()) return List.of();
+        String lower = query.toLowerCase();
+
+        // Detectar si contiene múltiples intenciones o escenarios
+        boolean hasAlcohol = lower.contains("alcohol") || lower.contains("embriaguez") || lower.contains("ebrio") || lower.contains("g/l") || lower.contains("aliento");
+        boolean hasVelocidad = lower.contains("velocidad") || lower.contains("km/h") || lower.contains("rango moderado") || lower.contains("radar") || lower.contains("carretera");
+        boolean hasCelular = lower.contains("celular") || lower.contains("teléfono") || lower.contains("telefono") || lower.contains("móvil") || lower.contains("movil") || lower.contains("dispositivo");
+        boolean hasSemaforo = lower.contains("semáforo") || lower.contains("semaforo") || lower.contains("luz roja");
+        boolean hasLicencia = lower.contains("licencia") || lower.contains("sin licencia") || lower.contains("caducada");
+
+        int scenarios = (hasAlcohol ? 1 : 0) + (hasVelocidad ? 1 : 0) + (hasCelular ? 1 : 0) + (hasSemaforo ? 1 : 0) + (hasLicencia ? 1 : 0);
+
+        if (scenarios >= 2) {
+            List<String> list = new ArrayList<>();
+            if (hasAlcohol) list.add("sancion escala nivel de alcohol conductores estado embriaguez Art 385 COIP");
+            if (hasVelocidad) list.add("limite de velocidad rango moderado fuera de rango carreteras Art 386 389 COIP Art 191 Reglamento");
+            if (hasCelular) list.add("contravencion uso de telefono celular dispositivos moviles al conducir Art 391 COIP");
+            if (hasSemaforo) list.add("contravencion desobedecer luz roja semaforo agente transito COIP");
+            if (hasLicencia) list.add("conducir sin haber obtenido licencia o con licencia caducada COIP");
+            return list;
+        }
+
+        // Si contiene conjunciones o numeraciones explícitas (1., 2., 3. o 'además', 'también')
+        if (query.contains("1.") && query.contains("2.")) {
+            String[] parts = query.split("\\b(?:1\\.|2\\.|3\\.|4\\.)\\s*");
+            List<String> cleanParts = new ArrayList<>();
+            for (String p : parts) {
+                String trimmed = p.replaceAll("[\n,;]+", " ").trim();
+                if (trimmed.length() >= 10) {
+                    cleanParts.add(trimmed);
+                }
+            }
+            if (cleanParts.size() >= 2) {
+                return cleanParts.subList(0, Math.min(cleanParts.size(), 4));
+            }
+        }
+
+        return List.of(query);
     }
 
     private boolean isDocumentInspectionQuery(String text) {
