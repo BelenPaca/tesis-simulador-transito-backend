@@ -1,5 +1,6 @@
 package com.programacion.taller3.entities;
 
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
@@ -16,6 +17,11 @@ public class ConversationEntity {
     private LocalDateTime createdAt;
     private String userId;
     private Boolean active = true;
+
+    // Columna nullable para almacenar nombres de archivos adjuntos acumulados separados por comas
+    // ej: "informe_pericial.pdf,guia_infracciones.pdf"
+    @Column(name = "attached_files", length = 1000, nullable = true)
+    private String attachedFiles;
 
     public ConversationEntity() {
         this.active = true;
@@ -71,5 +77,13 @@ public class ConversationEntity {
 
     public void setActive(Boolean active) {
         this.active = active;
+    }
+
+    public String getAttachedFiles() {
+        return attachedFiles;
+    }
+
+    public void setAttachedFiles(String attachedFiles) {
+        this.attachedFiles = attachedFiles;
     }
 }

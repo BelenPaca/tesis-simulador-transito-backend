@@ -162,6 +162,43 @@ public class ConversationService {
     }
 
     /**
+     * Registra o acumula un archivo adjunto en la conversación sin sobrescribir los anteriores.
+     */
+    @Transactional
+    public void registerAttachedFile(String conversationId, String newFile) {
+        if (conversationId == null || newFile == null || newFile.isBlank()) return;
+        conversationRepository.findById(conversationId).ifPresent(entity -> {
+            String current = entity.getAttachedFiles();
+            if (current == null || current.isBlank()) {
+                entity.setAttachedFiles(newFile.trim());
+            } else {
+                List<String> files = new java.util.ArrayList<>(List.of(current.split(",")));
+                boolean alreadyPresent = files.stream().anyMatch(f -> f.trim().equalsIgnoreCase(newFile.trim()));
+                if (!alreadyPresent) {
+                    files.add(newFile.trim());
+                    entity.setAttachedFiles(String.join(",", files));
+                }
+            }
+            conversationRepository.save(entity);
+        });
+    }
+
+    /**
+     * Obtiene la lista de todos los archivos adjuntos vinculados históricamente a la conversación.
+     */
+    public List<String> getAttachedFiles(String conversationId) {
+        if (conversationId == null) return List.of();
+        return conversationRepository.findById(conversationId)
+                .map(ConversationEntity::getAttachedFiles)
+                .filter(s -> s != null && !s.isBlank())
+                .map(s -> java.util.Arrays.stream(s.split(","))
+                        .map(String::trim)
+                        .filter(f -> !f.isEmpty())
+                        .collect(Collectors.toList()))
+                .orElse(List.of());
+    }
+
+    /**
      * Asigna o migra una conversación existente al usuario que inició sesión (adopción de chat).
      */
     @Transactional

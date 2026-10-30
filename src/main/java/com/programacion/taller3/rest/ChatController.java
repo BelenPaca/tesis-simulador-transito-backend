@@ -72,72 +72,92 @@ public class ChatController {
         // Guardar mensaje del usuario en PostgreSQL para la UI
         conversationService.saveMessage(conversationId, "user", message, userId);
 
+        // Si viene un archivo adjunto en este turno, registrarlo/acumularlo en la conversación en Neon
+        if (request.attachedFileName() != null && !request.attachedFileName().isBlank()) {
+            conversationService.registerAttachedFile(conversationId, request.attachedFileName());
+        }
+
         // 2. Determinar la consulta efectiva para Qdrant (contextualización dinámica si es pregunta de seguimiento)
         String effectiveQuery = buildEffectiveSearchQuery(message, previousMessages);
 
         // 3. Separación estricta de ámbitos: Documentos adjuntos del usuario vs Leyes Oficiales
-        String attachedFile = request.attachedFileName();
+        // Recuperar archivos acumulados en esta conversación (soporte multi-documento y persistencia multi-turno)
+        List<String> sessionAttachedFiles = conversationService.getAttachedFiles(conversationId);
+        if (sessionAttachedFiles.isEmpty() && request.attachedFileName() != null && !request.attachedFileName().isBlank()) {
+            sessionAttachedFiles = List.of(request.attachedFileName().trim());
+        }
+
         List<Document> userFileDocs = new ArrayList<>();
         List<Document> officialLawDocs = new ArrayList<>();
 
-        if (attachedFile != null && !attachedFile.isBlank()) {
-            String safeFile = attachedFile.replace("'", "");
-            String userDocQuery = message.length() < 20 ? (safeFile + " " + message) : message;
+        if (!sessionAttachedFiles.isEmpty()) {
+            // Buscar fragmentos para cada uno de los archivos vinculados a la conversación
+            Set<String> seenChunkIds = new HashSet<>();
+            for (String attachedFile : sessionAttachedFiles) {
+                String safeFile = attachedFile.replace("'", "");
+                String userDocQuery = message.length() < 20 ? (safeFile + " " + message) : message;
+                List<Document> currentFileDocs = new ArrayList<>();
 
-            // ESTRATEGIA 1: filtro exacto por nombre de archivo en Qdrant
-            try {
-                userFileDocs = vectorStore.similaritySearch(SearchRequest.builder()
-                        .query(userDocQuery)
-                        .topK(10)
-                        .filterExpression("source == '" + safeFile + "' || file_name == '" + safeFile + "'")
-                        .build());
-                System.out.println("Busqueda doc usuario (filtro source): " + userFileDocs.size() + " resultados");
-            } catch (Exception e) {
-                System.err.println("Filtro source fallo: " + e.getMessage());
-            }
-
-            // ESTRATEGIA 2: filtro por categoria=documento
-            if (userFileDocs.isEmpty()) {
+                // ESTRATEGIA 1: filtro exacto por nombre de archivo en Qdrant
                 try {
-                    userFileDocs = vectorStore.similaritySearch(SearchRequest.builder()
+                    currentFileDocs = vectorStore.similaritySearch(SearchRequest.builder()
                             .query(userDocQuery)
                             .topK(10)
-                            .filterExpression("categoria == 'documento'")
+                            .filterExpression("source == '" + safeFile + "' || file_name == '" + safeFile + "'")
                             .build());
-                    System.out.println("Busqueda doc usuario (filtro categoria): " + userFileDocs.size() + " resultados");
                 } catch (Exception e) {
-                    System.err.println("Filtro categoria fallo: " + e.getMessage());
+                    System.err.println("Filtro source fallo: " + e.getMessage());
                 }
-            }
 
-            // ESTRATEGIA 3: sin filtro Qdrant - buscar amplio y filtrar en memoria por metadatos.
-            // Cubre el caso donde Qdrant Cloud no tiene payload indexes en source/file_name/tipo/categoria.
-            if (userFileDocs.isEmpty()) {
-                try {
-                    List<Document> allResults = vectorStore.similaritySearch(SearchRequest.builder()
-                            .query(userDocQuery)
-                            .topK(20)
-                            .build());
-                    String finalSafeFile = safeFile;
-                    userFileDocs = allResults.stream()
-                            .filter(d -> {
-                                Map<String, Object> meta = d.getMetadata();
-                                if (meta == null) return false;
-                                String tipo = meta.getOrDefault("tipo", "").toString();
-                                String cat  = meta.getOrDefault("categoria", "").toString();
-                                String src  = meta.getOrDefault("source", "").toString();
-                                String fn   = meta.getOrDefault("file_name", "").toString();
-                                return "usuario_adjunto".equalsIgnoreCase(tipo)
-                                        || "documento".equalsIgnoreCase(cat)
-                                        || finalSafeFile.equalsIgnoreCase(src)
-                                        || finalSafeFile.equalsIgnoreCase(fn);
-                            })
-                            .collect(Collectors.toList());
-                    System.out.println("Busqueda doc usuario (filtro en memoria): " + userFileDocs.size() + " resultados");
-                } catch (Exception e) {
-                    System.err.println("Busqueda sin filtro fallo: " + e.getMessage());
+                // ESTRATEGIA 2: filtro por categoria=documento
+                if (currentFileDocs.isEmpty()) {
+                    try {
+                        currentFileDocs = vectorStore.similaritySearch(SearchRequest.builder()
+                                .query(userDocQuery)
+                                .topK(10)
+                                .filterExpression("categoria == 'documento'")
+                                .build());
+                    } catch (Exception e) {
+                        System.err.println("Filtro categoria fallo: " + e.getMessage());
+                    }
+                }
+
+                // ESTRATEGIA 3: sin filtro Qdrant - buscar amplio y filtrar en memoria por metadatos
+                if (currentFileDocs.isEmpty()) {
+                    try {
+                        List<Document> allResults = vectorStore.similaritySearch(SearchRequest.builder()
+                                .query(userDocQuery)
+                                .topK(20)
+                                .build());
+                        String finalSafeFile = safeFile;
+                        currentFileDocs = allResults.stream()
+                                .filter(d -> {
+                                    Map<String, Object> meta = d.getMetadata();
+                                    if (meta == null) return false;
+                                    String tipo = meta.getOrDefault("tipo", "").toString();
+                                    String cat  = meta.getOrDefault("categoria", "").toString();
+                                    String src  = meta.getOrDefault("source", "").toString();
+                                    String fn   = meta.getOrDefault("file_name", "").toString();
+                                    return "usuario_adjunto".equalsIgnoreCase(tipo)
+                                            || "documento".equalsIgnoreCase(cat)
+                                            || finalSafeFile.equalsIgnoreCase(src)
+                                            || finalSafeFile.equalsIgnoreCase(fn);
+                                })
+                                .collect(Collectors.toList());
+                    } catch (Exception e) {
+                        System.err.println("Busqueda sin filtro fallo: " + e.getMessage());
+                    }
+                }
+
+                for (Document d : currentFileDocs) {
+                    if (d.getId() != null && seenChunkIds.add(d.getId())) {
+                        userFileDocs.add(d);
+                    } else if (d.getId() == null) {
+                        userFileDocs.add(d);
+                    }
                 }
             }
+            System.out.println("Total fragmentos recuperados para documentos de la sesión: " + userFileDocs.size());
 
             // Solo buscar leyes oficiales complementarias si la consulta no es una inspección pura del documento
             boolean isPureDocInspection = isDocumentInspectionQuery(message);
@@ -181,7 +201,8 @@ public class ChatController {
         StringBuilder contextBuilder = new StringBuilder();
         if (!userFileDocs.isEmpty()) {
             contextBuilder.append("<DOCUMENTOS_DEL_CASO_USUARIO>\n");
-            contextBuilder.append("Archivo: ").append(attachedFile != null ? attachedFile : "Documento del usuario").append("\n");
+            String filesHeader = sessionAttachedFiles.isEmpty() ? "Documento del usuario" : String.join(", ", sessionAttachedFiles);
+            contextBuilder.append("Archivos adjuntos del caso: ").append(filesHeader).append("\n\n");
             for (Document d : userFileDocs) {
                 contextBuilder.append(d.getText()).append("\n\n");
             }
