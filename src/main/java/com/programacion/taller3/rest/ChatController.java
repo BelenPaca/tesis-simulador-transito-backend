@@ -25,6 +25,7 @@ import java.util.Base64;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 @RestController
 public class ChatController {
@@ -81,25 +82,61 @@ public class ChatController {
 
         if (attachedFile != null && !attachedFile.isBlank()) {
             String safeFile = attachedFile.replace("'", "");
-            // Buscar fragmentos específicos del archivo subido por el usuario (topK amplio para abarcar el documento completo)
+            String userDocQuery = message.length() < 20 ? (safeFile + " " + message) : message;
+
+            // ESTRATEGIA 1: filtro exacto por nombre de archivo en Qdrant
             try {
-                String userDocQuery = message.length() < 20 ? (safeFile + " " + message) : message;
-                var searchUserDoc = SearchRequest.builder()
+                userFileDocs = vectorStore.similaritySearch(SearchRequest.builder()
                         .query(userDocQuery)
                         .topK(10)
                         .filterExpression("source == '" + safeFile + "' || file_name == '" + safeFile + "'")
-                        .build();
-                userFileDocs = vectorStore.similaritySearch(searchUserDoc);
+                        .build());
+                System.out.println("Busqueda doc usuario (filtro source): " + userFileDocs.size() + " resultados");
+            } catch (Exception e) {
+                System.err.println("Filtro source fallo: " + e.getMessage());
+            }
 
-                if (userFileDocs.isEmpty()) {
+            // ESTRATEGIA 2: filtro por categoria=documento
+            if (userFileDocs.isEmpty()) {
+                try {
                     userFileDocs = vectorStore.similaritySearch(SearchRequest.builder()
                             .query(userDocQuery)
                             .topK(10)
                             .filterExpression("categoria == 'documento'")
                             .build());
+                    System.out.println("Busqueda doc usuario (filtro categoria): " + userFileDocs.size() + " resultados");
+                } catch (Exception e) {
+                    System.err.println("Filtro categoria fallo: " + e.getMessage());
                 }
-            } catch (Exception e) {
-                System.err.println("Nota en búsqueda de archivo adjunto: " + e.getMessage());
+            }
+
+            // ESTRATEGIA 3: sin filtro Qdrant - buscar amplio y filtrar en memoria por metadatos.
+            // Cubre el caso donde Qdrant Cloud no tiene payload indexes en source/file_name/tipo/categoria.
+            if (userFileDocs.isEmpty()) {
+                try {
+                    List<Document> allResults = vectorStore.similaritySearch(SearchRequest.builder()
+                            .query(userDocQuery)
+                            .topK(20)
+                            .build());
+                    String finalSafeFile = safeFile;
+                    userFileDocs = allResults.stream()
+                            .filter(d -> {
+                                Map<String, Object> meta = d.getMetadata();
+                                if (meta == null) return false;
+                                String tipo = meta.getOrDefault("tipo", "").toString();
+                                String cat  = meta.getOrDefault("categoria", "").toString();
+                                String src  = meta.getOrDefault("source", "").toString();
+                                String fn   = meta.getOrDefault("file_name", "").toString();
+                                return "usuario_adjunto".equalsIgnoreCase(tipo)
+                                        || "documento".equalsIgnoreCase(cat)
+                                        || finalSafeFile.equalsIgnoreCase(src)
+                                        || finalSafeFile.equalsIgnoreCase(fn);
+                            })
+                            .collect(Collectors.toList());
+                    System.out.println("Busqueda doc usuario (filtro en memoria): " + userFileDocs.size() + " resultados");
+                } catch (Exception e) {
+                    System.err.println("Busqueda sin filtro fallo: " + e.getMessage());
+                }
             }
 
             // Solo buscar leyes oficiales complementarias si la consulta no es una inspección pura del documento
