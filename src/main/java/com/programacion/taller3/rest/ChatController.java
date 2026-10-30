@@ -90,27 +90,31 @@ public class ChatController {
                         .filterExpression("source == '" + safeFile + "' || file_name == '" + safeFile + "'")
                         .build();
                 userFileDocs = vectorStore.similaritySearch(searchUserDoc);
+
+                if (userFileDocs.isEmpty()) {
+                    userFileDocs = vectorStore.similaritySearch(SearchRequest.builder()
+                            .query(userDocQuery)
+                            .topK(10)
+                            .filterExpression("categoria == 'documento'")
+                            .build());
+                }
             } catch (Exception e) {
                 System.err.println("Nota en búsqueda de archivo adjunto: " + e.getMessage());
             }
 
-            // Buscar leyes oficiales que apliquen a este caso
-            try {
-                var searchLaws = SearchRequest.builder()
-                        .query(effectiveQuery)
-                        .topK(5)
-                        .filterExpression("tipo == 'ley_oficial'")
-                        .build();
-                officialLawDocs = vectorStore.similaritySearch(searchLaws);
-            } catch (Exception e) {
-                System.err.println("Nota en búsqueda de leyes oficiales filtradas: " + e.getMessage());
-            }
-
-            if (officialLawDocs.isEmpty()) {
-                officialLawDocs = vectorStore.similaritySearch(SearchRequest.builder()
-                        .query(effectiveQuery)
-                        .topK(5)
-                        .build());
+            // Solo buscar leyes oficiales complementarias si la consulta no es una inspección pura del documento
+            boolean isPureDocInspection = isDocumentInspectionQuery(message);
+            if (!isPureDocInspection) {
+                try {
+                    var searchLaws = SearchRequest.builder()
+                            .query(effectiveQuery)
+                            .topK(5)
+                            .filterExpression("tipo == 'ley_oficial'")
+                            .build();
+                    officialLawDocs = vectorStore.similaritySearch(searchLaws);
+                } catch (Exception e) {
+                    System.err.println("Nota en búsqueda de leyes oficiales filtradas: " + e.getMessage());
+                }
             }
         } else {
             // Consulta normal: Solo leyes oficiales
@@ -250,6 +254,23 @@ public class ChatController {
             }
         }
         return currentMessage;
+    }
+
+    private boolean isDocumentInspectionQuery(String text) {
+        if (text == null) return false;
+        String clean = text.toLowerCase().trim();
+        return clean.contains("de que habla") ||
+               clean.contains("de qué habla") ||
+               clean.contains("resumen") ||
+               clean.contains("resume") ||
+               clean.contains("que contiene") ||
+               clean.contains("qué contiene") ||
+               clean.contains("analiza este documento") ||
+               clean.contains("analiza el documento") ||
+               clean.contains("de que trata") ||
+               clean.contains("de qué trata") ||
+               clean.contains("explica el documento") ||
+               clean.contains("contenido del documento");
     }
 
     private boolean isFollowUpQuestion(String text) {

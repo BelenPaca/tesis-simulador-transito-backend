@@ -14,3 +14,7 @@ qdrant_storage/
 inbound/*.pdf
 
 
+
+.env
+*.env
+
