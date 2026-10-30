@@ -36,7 +36,10 @@ public class DocumentUploadController {
     }
 
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<Map<String, Object>> uploadDocument(@RequestParam("file") MultipartFile multipartFile) {
+    public ResponseEntity<Map<String, Object>> uploadDocument(
+            @RequestParam("file") MultipartFile multipartFile,
+            @RequestHeader(value = "X-User-Id", required = false) String headerUserId,
+            @RequestParam(value = "userId", required = false) String paramUserId) {
         Map<String, Object> response = new HashMap<>();
 
         if (multipartFile.isEmpty()) {
@@ -60,8 +63,12 @@ public class DocumentUploadController {
                 in.transferTo(out);
             }
 
-            // 1. Leer con TikaDocumentReader y etiquetar categoría
-            List<Document> rawDocs = fileProcessor.procesar(tempFile, originalFilename);
+            String effectiveUserId = (paramUserId != null && !paramUserId.isBlank())
+                    ? paramUserId
+                    : (headerUserId != null && !headerUserId.isBlank() ? headerUserId : null);
+
+            // 1. Leer con TikaDocumentReader y etiquetar categoría y usuario
+            List<Document> rawDocs = fileProcessor.procesar(tempFile, originalFilename, effectiveUserId);
 
             // 2. Dividir en chunks
             List<Document> splitDocs = transformerProcessor.procesar(rawDocs);

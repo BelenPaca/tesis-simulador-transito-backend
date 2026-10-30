@@ -17,11 +17,15 @@ import java.util.Map;
 public class FileProcessor {
 
     public List<Document> procesar(File file) {
-        return procesar(file, file != null ? file.getName() : "documento.pdf");
+        return procesar(file, file != null ? file.getName() : "documento.pdf", null);
     }
 
     @Handler
     public List<Document> procesar(File file, @Header("CamelFileName") String originalFilename) {
+        return procesar(file, originalFilename, null);
+    }
+
+    public List<Document> procesar(File file, String originalFilename, String userId) {
         Resource resource = new FileSystemResource(file);
         TikaDocumentReader reader = new TikaDocumentReader(resource);
         List<Document> documents = reader.get();
@@ -33,9 +37,13 @@ public class FileProcessor {
         List<Document> documentosConMetadata = documents.stream().map(doc -> {
             Map<String, Object> nuevosMetadatos = new HashMap<>(doc.getMetadata());
             nuevosMetadatos.put("categoria", "documento");
+            nuevosMetadatos.put("tipo", "usuario_adjunto");
             nuevosMetadatos.put("source", finalName);
             nuevosMetadatos.put("file_name", finalName);
             nuevosMetadatos.put("original_filename", finalName);
+            if (userId != null && !userId.isBlank()) {
+                nuevosMetadatos.put("userId", userId);
+            }
             return new Document(doc.getId(), doc.getText(), nuevosMetadatos);
         }).toList();
 
