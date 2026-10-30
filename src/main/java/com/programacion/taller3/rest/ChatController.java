@@ -177,20 +177,23 @@ public class ChatController {
         // 4. Construir fuentes legales de Qdrant
         List<Map<String, String>> realSources = buildLegalSources(officialLawDocs);
 
-        // Construir contexto organizado por secciones
+        // Construir contexto organizado por secciones claramente delimitadas
         StringBuilder contextBuilder = new StringBuilder();
         if (!userFileDocs.isEmpty()) {
-            contextBuilder.append("=== DOCUMENTO DEL CASO ADJUNTADO POR EL USUARIO (").append(attachedFile).append(") ===\n");
+            contextBuilder.append("<DOCUMENTOS_DEL_CASO_USUARIO>\n");
+            contextBuilder.append("Archivo: ").append(attachedFile != null ? attachedFile : "Documento del usuario").append("\n");
             for (Document d : userFileDocs) {
                 contextBuilder.append(d.getText()).append("\n\n");
             }
+            contextBuilder.append("</DOCUMENTOS_DEL_CASO_USUARIO>\n\n");
         }
 
         if (!officialLawDocs.isEmpty()) {
-            contextBuilder.append("=== NORMATIVA LEGAL OFICIAL DEL ECUADOR ===\n");
+            contextBuilder.append("<MARCO_LEGAL_OFICIAL_RAG>\n");
             for (Document d : officialLawDocs) {
                 contextBuilder.append(d.getText()).append("\n\n");
             }
+            contextBuilder.append("</MARCO_LEGAL_OFICIAL_RAG>\n");
         }
 
         String context = contextBuilder.toString().trim();
