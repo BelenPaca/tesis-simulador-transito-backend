@@ -98,54 +98,41 @@ public class ChatController {
                 String userDocQuery = message.length() < 20 ? (safeFile + " " + message) : message;
                 List<Document> currentFileDocs = new ArrayList<>();
 
-                // ESTRATEGIA 1: filtro exacto por nombre de archivo en Qdrant
+                // ESTRATEGIA 1: filtro exacto por nombre de archivo en Qdrant (en la raíz o en metadata)
                 try {
                     currentFileDocs = vectorStore.similaritySearch(SearchRequest.builder()
                             .query(userDocQuery)
                             .topK(10)
-                            .filterExpression("source == '" + safeFile + "' || file_name == '" + safeFile + "'")
+                            .filterExpression("source == '" + safeFile + "' || file_name == '" + safeFile + "' || metadata.source == '" + safeFile + "' || metadata.file_name == '" + safeFile + "'")
                             .build());
                 } catch (Exception e) {
                     System.err.println("Filtro source fallo: " + e.getMessage());
                 }
 
-                // ESTRATEGIA 2: filtro por categoria=documento
-                if (currentFileDocs.isEmpty()) {
-                    try {
-                        currentFileDocs = vectorStore.similaritySearch(SearchRequest.builder()
-                                .query(userDocQuery)
-                                .topK(10)
-                                .filterExpression("categoria == 'documento'")
-                                .build());
-                    } catch (Exception e) {
-                        System.err.println("Filtro categoria fallo: " + e.getMessage());
-                    }
-                }
-
-                // ESTRATEGIA 3: sin filtro Qdrant - buscar amplio y filtrar en memoria por metadatos
+                // ESTRATEGIA 2: filtro seguro que NUNCA acepta otros archivos. Solo busca chunks que coincidan con ESTE archivo.
                 if (currentFileDocs.isEmpty()) {
                     try {
                         List<Document> allResults = vectorStore.similaritySearch(SearchRequest.builder()
                                 .query(userDocQuery)
-                                .topK(20)
+                                .topK(30)
                                 .build());
-                        String finalSafeFile = safeFile;
+                        String finalSafeFile = safeFile.toLowerCase().trim();
                         currentFileDocs = allResults.stream()
                                 .filter(d -> {
                                     Map<String, Object> meta = d.getMetadata();
                                     if (meta == null) return false;
-                                    String tipo = meta.getOrDefault("tipo", "").toString();
-                                    String cat  = meta.getOrDefault("categoria", "").toString();
-                                    String src  = meta.getOrDefault("source", "").toString();
-                                    String fn   = meta.getOrDefault("file_name", "").toString();
-                                    return "usuario_adjunto".equalsIgnoreCase(tipo)
-                                            || "documento".equalsIgnoreCase(cat)
-                                            || finalSafeFile.equalsIgnoreCase(src)
-                                            || finalSafeFile.equalsIgnoreCase(fn);
+                                    String src  = meta.getOrDefault("source", "").toString().toLowerCase().trim();
+                                    String fn   = meta.getOrDefault("file_name", "").toString().toLowerCase().trim();
+                                    String orig = meta.getOrDefault("original_filename", "").toString().toLowerCase().trim();
+                                    return finalSafeFile.equals(src)
+                                            || finalSafeFile.equals(fn)
+                                            || finalSafeFile.equals(orig)
+                                            || (src.contains(finalSafeFile) && !src.isBlank())
+                                            || (fn.contains(finalSafeFile) && !fn.isBlank());
                                 })
                                 .collect(Collectors.toList());
                     } catch (Exception e) {
-                        System.err.println("Busqueda sin filtro fallo: " + e.getMessage());
+                        System.err.println("Busqueda de respaldo por archivo fallo: " + e.getMessage());
                     }
                 }
 
@@ -165,8 +152,14 @@ public class ChatController {
                 officialLawDocs = retrieveOfficialLawsWithDecomposition(effectiveQuery);
             }
         } else {
-            // Consulta normal: Búsqueda de leyes oficiales con Query Decomposition y deduplicación
-            officialLawDocs = retrieveOfficialLawsWithDecomposition(effectiveQuery);
+            // Si el usuario pregunta "de que trata" o "resúmelo" pero NO ha subido ningún documento aún a la conversación,
+            // no inyectar leyes oficiales al azar para evitar que invente o resuma el Reglamento LOTTTSV
+            boolean isPureDocInspection = isDocumentInspectionQuery(message);
+            if (!isPureDocInspection) {
+                officialLawDocs = retrieveOfficialLawsWithDecomposition(effectiveQuery);
+            } else {
+                System.out.println("Consulta de inspección recibida sin documento adjunto en la sesión. Omitiendo leyes oficiales.");
+            }
         }
 
         // 4. Construir fuentes legales de Qdrant
@@ -419,11 +412,21 @@ public class ChatController {
 
     private boolean isDocumentInspectionQuery(String text) {
         if (text == null) return false;
-        String clean = text.toLowerCase().trim();
-        return clean.contains("de que habla") ||
+        String clean = text.toLowerCase().trim().replaceAll("[¿?\\.,!¡]+", "").trim();
+        return clean.equals("de que trata") ||
+               clean.equals("de que habla") ||
+               clean.equals("de que se trata") ||
+               clean.equals("de que se habla") ||
+               clean.equals("que dice") ||
+               clean.equals("resumelo") ||
+               clean.equals("resumen") ||
+               clean.equals("explicamelo") ||
+               clean.contains("de que habla") ||
                clean.contains("de qué habla") ||
                clean.contains("resumen") ||
                clean.contains("resume") ||
+               clean.contains("resúmelo") ||
+               clean.contains("resumelo") ||
                clean.contains("que contiene") ||
                clean.contains("qué contiene") ||
                clean.contains("analiza este documento") ||
@@ -431,7 +434,9 @@ public class ChatController {
                clean.contains("de que trata") ||
                clean.contains("de qué trata") ||
                clean.contains("explica el documento") ||
-               clean.contains("contenido del documento");
+               clean.contains("contenido del documento") ||
+               clean.contains("explicame de que trata") ||
+               clean.contains("explícame de qué trata");
     }
 
     private boolean isFollowUpQuestion(String text) {
