@@ -42,9 +42,6 @@ public class ChatController {
     @Autowired
     ConversationService conversationService;
 
-    @Autowired
-    com.programacion.taller3.services.LegalHierarchyService legalHierarchyService;
-
     public ChatController(ChatClient.Builder builder, RestConfiguration configuration) {
         this.chatClient = builder
                 .defaultAdvisors(
@@ -183,18 +180,8 @@ public class ChatController {
         if (!officialLawDocs.isEmpty()) {
             contextBuilder.append("<MARCO_LEGAL_OFICIAL_RAG>\n");
             for (Document d : officialLawDocs) {
-                String sourceFile = "";
-                Map<String, Object> meta = d.getMetadata();
-                if (meta != null) {
-                    if (meta.containsKey("source") && meta.get("source") != null) {
-                        sourceFile = meta.get("source").toString();
-                    } else if (meta.containsKey("file_name") && meta.get("file_name") != null) {
-                        sourceFile = meta.get("file_name").toString();
-                    }
-                }
                 String text = d.getText() != null ? d.getText() : "";
-                String enrichedText = legalHierarchyService.enrichChunkIfNeeded(text, sourceFile);
-                contextBuilder.append(enrichedText).append("\n\n");
+                contextBuilder.append(text).append("\n\n");
             }
             contextBuilder.append("</MARCO_LEGAL_OFICIAL_RAG>\n");
         }
