@@ -84,7 +84,7 @@ public class LegalHierarchyService {
         if (content == null || content.isBlank()) return list;
 
         // Dividir por encabezados de artículos (### Art. o similar)
-        Pattern articlePattern = Pattern.compile("(?m)(?=^#{1,4}\\s*Art(?:ículo|\\.)\\b)", Pattern.CASE_INSENSITIVE);
+        Pattern articlePattern = Pattern.compile("(?m)^(?=#{1,4}\\s*Art(?:ículo|\\.)?\\b)", Pattern.CASE_INSENSITIVE);
         String[] sections = articlePattern.split(content);
 
         for (String sec : sections) {
@@ -114,15 +114,6 @@ public class LegalHierarchyService {
 
     private String extractHeaderAndSanction(String articleText) {
         if (articleText == null || articleText.isBlank()) return "";
-
-        // Si es el Art. 386 del COIP (que tiene sub-incisos sancionatorios intermedios), incluir la primera parte completa
-        if (articleText.contains("Art. 386") && articleText.contains("primera clase")) {
-            // Tomar el encabezado completo del Art. 386
-            Matcher m = Pattern.compile("(?s)^(.*?)(?=\\n\\s*1\\.\\s+La persona que conduzca sin haber obtenido)", Pattern.CASE_INSENSITIVE).matcher(articleText);
-            if (m.find()) {
-                return m.group(1).trim();
-            }
-        }
 
         // Caso general: Buscar hasta antes del primer numeral con formato: "1. ", "1.- "
         Matcher matcher = Pattern.compile("(?m)^\\s*1[\\.\\-]\\s+", Pattern.CASE_INSENSITIVE).matcher(articleText);
