@@ -42,6 +42,9 @@ public class ChatController {
     @Autowired
     ConversationService conversationService;
 
+    @Autowired
+    com.programacion.taller3.services.LegalHierarchyService legalHierarchyService;
+
     public ChatController(ChatClient.Builder builder, RestConfiguration configuration) {
         this.chatClient = builder
                 .defaultAdvisors(
@@ -180,7 +183,18 @@ public class ChatController {
         if (!officialLawDocs.isEmpty()) {
             contextBuilder.append("<MARCO_LEGAL_OFICIAL_RAG>\n");
             for (Document d : officialLawDocs) {
-                contextBuilder.append(d.getText()).append("\n\n");
+                String sourceFile = "";
+                Map<String, Object> meta = d.getMetadata();
+                if (meta != null) {
+                    if (meta.containsKey("source") && meta.get("source") != null) {
+                        sourceFile = meta.get("source").toString();
+                    } else if (meta.containsKey("file_name") && meta.get("file_name") != null) {
+                        sourceFile = meta.get("file_name").toString();
+                    }
+                }
+                String text = d.getText() != null ? d.getText() : "";
+                String enrichedText = legalHierarchyService.enrichChunkIfNeeded(text, sourceFile);
+                contextBuilder.append(enrichedText).append("\n\n");
             }
             contextBuilder.append("</MARCO_LEGAL_OFICIAL_RAG>\n");
         }
@@ -339,11 +353,6 @@ public class ChatController {
                     if (seenIdentifiers.add(idKey)) {
                         combined.add(d);
                     }
-
-                    // Recuperación contextual proactiva: si un fragmento contiene numerales de contravenciones
-                    // (como el Art. 391 o 386 al 392) pero no incluye el encabezado con la sanción económica/penas,
-                    // recuperar de inmediato el encabezado del artículo para que el numeral no quede huérfano.
-                    enrichWithArticleHeaderIfNeeded(d, combined, seenIdentifiers);
                 }
             } catch (Exception e) {
                 System.err.println("Error en sub-consulta [" + subQ + "]: " + e.getMessage());
@@ -361,11 +370,6 @@ public class ChatController {
                     if (seenIdentifiers.add(idKey)) {
                         combined.add(d);
                     }
-
-                    // Recuperación contextual proactiva: si un fragmento contiene numerales de contravenciones
-                    // (como el Art. 391 o 386 al 392) pero no incluye el encabezado con la sanción económica/penas,
-                    // recuperar de inmediato el encabezado del artículo para que el numeral no quede huérfano.
-                    enrichWithArticleHeaderIfNeeded(d, combined, seenIdentifiers);
                 }
             } catch (Exception ex) {
                 System.err.println("Fallback general de leyes: " + ex.getMessage());
@@ -379,63 +383,6 @@ public class ChatController {
     /**
      * Identifica si la consulta combina múltiples temas legales y la divide en sub-consultas enfocadas.
      */
-    /**
-     * Si un fragmento legal recuperado contiene numerales específicos pero no incluye el encabezado
-     * del artículo donde se define la sanción o clase (ej. multa del 10% SBU, días de prisión),
-     * busca proactivamente el fragmento que contiene el encabezado del artículo para que no quede huérfano.
-     */
-    private void enrichWithArticleHeaderIfNeeded(Document doc, List<Document> combined, Set<String> seenIdentifiers) {
-        if (doc == null || doc.getText() == null) return;
-        String text = doc.getText();
-        Map<String, Object> meta = doc.getMetadata();
-        String sourceFile = meta != null && meta.containsKey("source") ? meta.get("source").toString() : "";
-
-        // Si el fragmento habla de numerales del Art. 391 o menciona teléfono celular pero no contiene el encabezado con la sanción
-        if ((text.contains("teléfono celular") || text.contains("telefono celular") || text.contains("12. La o el conductor que utilice"))
-                && !text.contains("Contravenciones de tránsito de sexta clase") && !text.contains("diez por ciento")) {
-            try {
-                var headerSearch = SearchRequest.builder()
-                        .query("Art 391 Contravenciones de transito de sexta clase sancionado con multa diez por ciento")
-                        .topK(2)
-                        .filterExpression("tipo == 'ley_oficial'")
-                        .build();
-                List<Document> headerDocs = vectorStore.similaritySearch(headerSearch);
-                for (Document hd : headerDocs) {
-                    String hText = hd.getText() != null ? hd.getText().trim() : "";
-                    String sKey = hText.length() > 60 ? hText.substring(0, 60) : hText;
-                    String idK = hd.getId() != null ? hd.getId() : sKey;
-                    if (seenIdentifiers.add(idK)) {
-                        combined.add(0, hd); // Insertar al inicio para que el modelo lea primero la sanción
-                    }
-                }
-            } catch (Exception e) {
-                System.err.println("Nota al enriquecer encabezado del Art. 391: " + e.getMessage());
-            }
-        }
-
-        // Si el fragmento habla de velocidad pero no contiene la tabla del Art. 191 del Reglamento
-        if (text.contains("386") && text.contains("velocidad") && !text.contains("191")) {
-            try {
-                var regSearch = SearchRequest.builder()
-                        .query("Art 191 limites de velocidad vehiculos livianos rectas carreteras rango moderado fuera de rango")
-                        .topK(2)
-                        .filterExpression("tipo == 'ley_oficial'")
-                        .build();
-                List<Document> regDocs = vectorStore.similaritySearch(regSearch);
-                for (Document rd : regDocs) {
-                    String rText = rd.getText() != null ? rd.getText().trim() : "";
-                    String sKey = rText.length() > 60 ? rText.substring(0, 60) : rText;
-                    String idK = rd.getId() != null ? rd.getId() : sKey;
-                    if (seenIdentifiers.add(idK)) {
-                        combined.add(rd);
-                    }
-                }
-            } catch (Exception e) {
-                System.err.println("Nota al enriquecer Art. 191 de velocidad: " + e.getMessage());
-            }
-        }
-    }
-
     private List<String> decomposeQueryIfCompound(String query) {
         if (query == null || query.isBlank()) return List.of();
         String lower = query.toLowerCase();

@@ -21,7 +21,7 @@ public class EmbeddingProcessor {
     public void procesar(List<Document> documents) {
         System.out.println("EmbeddingProcessor: total de fragmentos a procesar: " + documents.size());
 
-        // Lotes de 50 fragmentos para procesar hasta 5x m·s r·pido sin saturar la cuota
+        // Lotes de 50 fragmentos para procesar hasta 5x m√°s r√°pido sin saturar la cuota
         int batchSize = 50;
         int total = documents.size();
 
