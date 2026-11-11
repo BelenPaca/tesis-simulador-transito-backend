@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -20,12 +21,19 @@ import java.util.stream.Collectors;
 @Service
 public class ConversationService {
 
+    private static final ZoneId ECUADOR_ZONE = ZoneId.of("America/Guayaquil");
+
     private final ConversationRepository conversationRepository;
     private final ChatMessageRepository chatMessageRepository;
 
     public ConversationService(ConversationRepository conversationRepository, ChatMessageRepository chatMessageRepository) {
         this.conversationRepository = conversationRepository;
         this.chatMessageRepository = chatMessageRepository;
+    }
+
+    private String formatEcuadorDateTime(LocalDateTime dt) {
+        if (dt == null) return "";
+        return dt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "-05:00";
     }
 
     /**
@@ -38,7 +46,7 @@ public class ConversationService {
 
     @Transactional
     public Conversation createConversation(String id, String title, String userId) {
-        LocalDateTime createdAt = LocalDateTime.now();
+        LocalDateTime createdAt = LocalDateTime.now(ECUADOR_ZONE);
 
         if (title == null || title.isBlank()) {
             title = "Nueva conversación";
@@ -47,7 +55,7 @@ public class ConversationService {
         ConversationEntity entity = new ConversationEntity(id, title, createdAt, userId);
         conversationRepository.save(entity);
 
-        return new Conversation(id, title, createdAt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME), List.of(), userId);
+        return new Conversation(id, title, formatEcuadorDateTime(createdAt), List.of(), userId);
     }
 
     /**
@@ -58,7 +66,7 @@ public class ConversationService {
                 .map(entity -> new Conversation(
                         entity.getId(),
                         entity.getTitle(),
-                        entity.getCreatedAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                        formatEcuadorDateTime(entity.getCreatedAt()),
                         List.of(),
                         entity.getUserId()
                 ))
@@ -76,7 +84,7 @@ public class ConversationService {
                 .map(entity -> new Conversation(
                         entity.getId(),
                         entity.getTitle(),
-                        entity.getCreatedAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                        formatEcuadorDateTime(entity.getCreatedAt()),
                         List.of(),
                         entity.getUserId()
                 ))
@@ -103,7 +111,7 @@ public class ConversationService {
                 conversationId,
                 role,
                 content,
-                LocalDateTime.now()
+                LocalDateTime.now(ECUADOR_ZONE)
         );
         chatMessageRepository.save(msg);
     }
@@ -116,7 +124,7 @@ public class ConversationService {
                 .map(entity -> new ChatMessage(
                         entity.getRole(),
                         entity.getContent(),
-                        entity.getTimestamp().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                        formatEcuadorDateTime(entity.getTimestamp())
                 ))
                 .collect(Collectors.toList());
     }
