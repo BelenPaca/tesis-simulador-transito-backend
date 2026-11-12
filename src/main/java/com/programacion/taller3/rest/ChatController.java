@@ -135,16 +135,52 @@ public class ChatController {
         }
         final String finalSourcesJson = sourcesJson;
 
-        String sourcesChunk = (!finalSourcesJson.isBlank() && !finalSourcesJson.equals("[]")) ? "\n[LEGAL_SOURCES]" + finalSourcesJson + "[/LEGAL_SOURCES]" : "";
+        Flux<ServerSentEvent<String>> sourcesFlux = Flux.defer(() -> {
+            String answer = fullResponse.toString().toLowerCase();
+            boolean isOutOfDomainOrNonTransit = answer.contains("únicamente puedo responder")
+                    || answer.contains("unicamente puedo responder")
+                    || answer.contains("como asistente legal especializado")
+                    || answer.contains("no contiene información sobre infracciones")
+                    || answer.contains("no contiene informacion sobre infracciones")
+                    || answer.contains("no contiene información sobre normativa vial")
+                    || answer.contains("no contiene informacion sobre normativa vial")
+                    || answer.contains("no contiene infracciones")
+                    || answer.contains("no guarda relación con tránsito")
+                    || answer.contains("no guarda relacion con transito")
+                    || answer.contains("no corresponde a materia de tránsito")
+                    || answer.contains("no corresponde a materia de transito");
 
-        Flux<ServerSentEvent<String>> sourcesFlux = sourcesChunk.isBlank() ? Flux.empty() : Flux.just(ServerSentEvent.<String>builder().event("token").data(Base64.getEncoder().encodeToString(sourcesChunk.getBytes(StandardCharsets.UTF_8))).build());
+            if (isOutOfDomainOrNonTransit || finalSourcesJson.isBlank() || finalSourcesJson.equals("[]")) {
+                return Flux.empty();
+            }
+
+            String sourcesChunk = "\n[LEGAL_SOURCES]" + finalSourcesJson + "[/LEGAL_SOURCES]";
+            return Flux.just(ServerSentEvent.<String>builder()
+                    .event("token")
+                    .data(Base64.getEncoder().encodeToString(sourcesChunk.getBytes(StandardCharsets.UTF_8)))
+                    .build());
+        });
 
         Flux<ServerSentEvent<String>> done = Flux.defer(() -> {
             if (!fullResponse.isEmpty()) {
                 try {
                     String toSave = fullResponse.toString();
-                    if (!sourcesChunk.isBlank() && !toSave.contains("[LEGAL_SOURCES]")) {
-                        toSave += sourcesChunk;
+                    String answer = toSave.toLowerCase();
+                    boolean isOutOfDomainOrNonTransit = answer.contains("únicamente puedo responder")
+                            || answer.contains("unicamente puedo responder")
+                            || answer.contains("como asistente legal especializado")
+                            || answer.contains("no contiene información sobre infracciones")
+                            || answer.contains("no contiene informacion sobre infracciones")
+                            || answer.contains("no contiene información sobre normativa vial")
+                            || answer.contains("no contiene informacion sobre normativa vial")
+                            || answer.contains("no contiene infracciones")
+                            || answer.contains("no guarda relación con tránsito")
+                            || answer.contains("no guarda relacion con transito")
+                            || answer.contains("no corresponde a materia de tránsito")
+                            || answer.contains("no corresponde a materia de transito");
+
+                    if (!isOutOfDomainOrNonTransit && !finalSourcesJson.isBlank() && !finalSourcesJson.equals("[]") && !toSave.contains("[LEGAL_SOURCES]")) {
+                        toSave += "\n[LEGAL_SOURCES]" + finalSourcesJson + "[/LEGAL_SOURCES]";
                     }
                     conversationService.saveMessage(conversationId, "assistant", toSave);
                 } catch (Exception e) {
@@ -170,7 +206,8 @@ public class ChatController {
 
         for (String attachedFile : sessionAttachedFiles) {
             String safeFile = attachedFile.replace("'", "").trim();
-            String userDocQuery = message.length() < 25 ? (safeFile + " " + message) : message;
+            String safeFileClean = safeFile.replaceAll("(?i)\\.(pdf|docx|txt|jpg|png)$", "");
+            String userDocQuery = (safeFile + " " + safeFileClean + " " + message).trim();
             List<Document> currentFileDocs = new ArrayList<>();
 
             // ESTRATEGIA 1: filtro exacto por nombre de archivo en Qdrant
@@ -189,9 +226,10 @@ public class ChatController {
                 try {
                     List<Document> allResults = vectorStore.similaritySearch(SearchRequest.builder()
                             .query(userDocQuery)
-                            .topK(35)
+                            .topK(40)
                             .build());
                     String finalSafeFile = safeFile.toLowerCase().trim();
+                    String finalSafeClean = safeFileClean.toLowerCase().trim();
                     currentFileDocs = allResults.stream().filter(d -> {
                         Map<String, Object> meta = d.getMetadata();
                         if (meta == null) return false;
@@ -199,11 +237,35 @@ public class ChatController {
                         String fn = meta.getOrDefault("file_name", "").toString().toLowerCase().trim();
                         String orig = meta.getOrDefault("original_filename", "").toString().toLowerCase().trim();
                         return finalSafeFile.equals(src) || finalSafeFile.equals(fn) || finalSafeFile.equals(orig)
-                                || (src.contains(finalSafeFile) && !src.isBlank())
-                                || (fn.contains(finalSafeFile) && !fn.isBlank());
+                                || (src.contains(finalSafeClean) && !src.isBlank())
+                                || (fn.contains(finalSafeClean) && !fn.isBlank());
                     }).collect(Collectors.toList());
                 } catch (Exception e) {
                     System.err.println("Busqueda de respaldo por archivo fallo: " + e.getMessage());
+                }
+            }
+
+            // ESTRATEGIA 3: Si todavía no encuentra (ej. consulta muy abstracta), buscar directamente por el nombre del archivo
+            if (currentFileDocs.isEmpty() && !safeFileClean.isBlank()) {
+                try {
+                    List<Document> fileFallbackResults = vectorStore.similaritySearch(SearchRequest.builder()
+                            .query(safeFileClean)
+                            .topK(25)
+                            .build());
+                    String finalSafeFile = safeFile.toLowerCase().trim();
+                    String finalSafeClean = safeFileClean.toLowerCase().trim();
+                    currentFileDocs = fileFallbackResults.stream().filter(d -> {
+                        Map<String, Object> meta = d.getMetadata();
+                        if (meta == null) return false;
+                        String src = meta.getOrDefault("source", "").toString().toLowerCase().trim();
+                        String fn = meta.getOrDefault("file_name", "").toString().toLowerCase().trim();
+                        String orig = meta.getOrDefault("original_filename", "").toString().toLowerCase().trim();
+                        return finalSafeFile.equals(src) || finalSafeFile.equals(fn) || finalSafeFile.equals(orig)
+                                || (src.contains(finalSafeClean) && !src.isBlank())
+                                || (fn.contains(finalSafeClean) && !fn.isBlank());
+                    }).collect(Collectors.toList());
+                } catch (Exception e) {
+                    System.err.println("Busqueda directa por nombre de archivo fallo: " + e.getMessage());
                 }
             }
 
@@ -253,13 +315,13 @@ public class ChatController {
 
         List<String> subQueries = decomposeQuerySyntactically(effectiveQuery);
         // Si NO hay documento adjunto (consulta normal), threshold = 0.0 (trae por topK sin bloquear nada).
-        // Si SÍ hay documento adjunto, threshold = 0.43 para que "resúmelo" / "de qué trata" devuelva 0 leyes oficiales.
-        double threshold = userFileDocs.isEmpty() ? 0.0 : 0.43;
+        // Si SÍ hay documento adjunto, threshold = 0.55 para que preguntas como "resúmelo" o "de qué trata" devuelvan 0 leyes oficiales (evita contaminar con COGEP u otras normas).
+        double threshold = userFileDocs.isEmpty() ? 0.0 : 0.55;
 
         for (int i = 0; i < subQueries.size(); i++) {
-            // La primera búsqueda (índice 0) es la consulta global con topK amplio de 12 fragmentos;
-            // las sub-ventanas deslizantes aportan 5 fragmentos especializados cada una.
-            int topK = (i == 0) ? 12 : 5;
+            // La primera búsqueda (índice 0) es la consulta global con topK amplio de 14 fragmentos;
+            // las sub-ventanas deslizantes aportan 6 fragmentos especializados cada una.
+            int topK = (i == 0) ? 14 : 6;
             addUniqueLawDocs(combined, seenIdentifiers, subQueries.get(i), topK, threshold);
         }
 
@@ -360,10 +422,11 @@ public class ChatController {
         queries.add(cleanQuery);
 
         // 2. Ventana deslizante de 12 palabras con paso (stride) de 8 palabras (solapamiento de 4 palabras)
+        // Limitamos a máximo 3 consultas en total para optimizar la latencia en 1.5s sin perder cobertura
         int windowSize = 12;
         int stride = 8;
 
-        for (int start = 0; start < words.length && queries.size() < 5; start += stride) {
+        for (int start = 0; start < words.length && queries.size() < 3; start += stride) {
             int end = Math.min(start + windowSize, words.length);
             if (end - start < 7 && start > 0) {
                 start = Math.max(0, words.length - windowSize);
