@@ -259,26 +259,24 @@ public class ChatController {
         }
 
         // PUENTE AUTOMÁTICO DE HECHOS: Si hay un documento adjunto Y la pregunta del usuario superó el umbral legal
-        // (es decir, pide sanciones/leyes sobre el documento), buscamos también en Qdrant usando los hechos del PDF
+        // (es decir, pide sanciones/leyes sobre el documento), buscamos también en Qdrant usando los hechos del archivo
         if (!userFileDocs.isEmpty() && !combined.isEmpty()) {
             String docFactsQuery = userFileDocs.stream()
-                    .filter(d -> {
-                        String t = d.getText() != null ? d.getText().toLowerCase() : "";
-                        return t.contains("accidente") || t.contains("siniestro") || t.contains("velocidad")
-                                || t.contains("daño") || t.contains("alcohol") || t.contains("alcoholemia")
-                                || t.contains("conductor") || t.contains("lesion") || t.contains("lesión")
-                                || t.contains("vehículo") || t.contains("vehiculo");
-                    })
-                    .findFirst()
-                    .map(Document::getText)
-                    .orElseGet(() -> userFileDocs.get(0).getText());
+                    .map(d -> d.getText() != null ? d.getText().replaceAll("\\s+", " ").trim() : "")
+                    .filter(t -> t.length() > 80)
+                    .limit(3)
+                    .collect(Collectors.joining(" "));
 
-            if (docFactsQuery != null && !docFactsQuery.isBlank()) {
-                String cleanFacts = docFactsQuery.replaceAll("\\s+", " ").trim();
-                if (cleanFacts.length() > 420) {
-                    cleanFacts = cleanFacts.substring(0, 420);
+            if (docFactsQuery.isBlank() && !userFileDocs.isEmpty()) {
+                String firstText = userFileDocs.get(0).getText();
+                docFactsQuery = firstText != null ? firstText.replaceAll("\\s+", " ").trim() : "";
+            }
+
+            if (!docFactsQuery.isBlank()) {
+                if (docFactsQuery.length() > 500) {
+                    docFactsQuery = docFactsQuery.substring(0, 500);
                 }
-                addUniqueLawDocs(combined, seenIdentifiers, cleanFacts, 6, threshold);
+                addUniqueLawDocs(combined, seenIdentifiers, docFactsQuery, 6, threshold);
             }
         }
 
