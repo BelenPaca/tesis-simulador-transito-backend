@@ -243,21 +243,24 @@ public class ChatController {
     }
 
     /**
-     * Recupera leyes oficiales con descomposición sintáctica pura y filtro matemático Coseno (similarityThreshold).
-     * Si el usuario subió un documento y hace una consulta jurídica/sancionatoria sobre el mismo, activa el puente de hechos.
+     * Recupera leyes oficiales con Ventana Deslizante Léxica (Overlapping Word Sliding Window)
+     * y filtro matemático Coseno adaptativo.
+     * 100% agnóstico a palabras quemadas, ortografía o signos de puntuación.
      */
     private List<Document> retrieveOfficialLawsSyntactically(String effectiveQuery, List<Document> userFileDocs) {
         List<Document> combined = new ArrayList<>();
         Set<String> seenIdentifiers = new HashSet<>();
 
         List<String> subQueries = decomposeQuerySyntactically(effectiveQuery);
-        int topKPerQuery = subQueries.size() <= 1 ? 8 : 4;
-        // Si NO hay documento adjunto (consulta normal), threshold = 0.0 (trae siempre por topK sin bloquear nada).
+        // Si NO hay documento adjunto (consulta normal), threshold = 0.0 (trae por topK sin bloquear nada).
         // Si SÍ hay documento adjunto, threshold = 0.43 para que "resúmelo" / "de qué trata" devuelva 0 leyes oficiales.
         double threshold = userFileDocs.isEmpty() ? 0.0 : 0.43;
 
-        for (String subQ : subQueries) {
-            addUniqueLawDocs(combined, seenIdentifiers, subQ, topKPerQuery, threshold);
+        for (int i = 0; i < subQueries.size(); i++) {
+            // La primera búsqueda (índice 0) es la consulta global con topK amplio de 12 fragmentos;
+            // las sub-ventanas deslizantes aportan 5 fragmentos especializados cada una.
+            int topK = (i == 0) ? 12 : 5;
+            addUniqueLawDocs(combined, seenIdentifiers, subQueries.get(i), topK, threshold);
         }
 
         // PUENTE AUTOMÁTICO DE HECHOS: Si hay un documento adjunto Y la pregunta del usuario superó el umbral legal
@@ -287,6 +290,7 @@ public class ChatController {
     }
 
     private void addUniqueLawDocs(List<Document> combined, Set<String> seenIdentifiers, String queryText, int topK, double threshold) {
+        List<Document> docs = new ArrayList<>();
         try {
             var searchBuilder = SearchRequest.builder()
                     .query(queryText)
@@ -297,10 +301,14 @@ public class ChatController {
                 searchBuilder.similarityThreshold(threshold);
             }
 
-            List<Document> docs = vectorStore.similaritySearch(searchBuilder.build());
+            docs = vectorStore.similaritySearch(searchBuilder.build());
+        } catch (Exception e) {
+            // Si el filtro de metadato 'tipo' falla en Qdrant por falta de índice, continúa directo al fallback
+        }
 
-            // Fallback si el metadato 'tipo' no coincidió en Qdrant (mantiene threshold si hay archivo adjunto)
-            if (docs.isEmpty()) {
+        // Fallback: búsqueda sin filtro de metadato (conservando threshold si hay documento adjunto)
+        if (docs == null || docs.isEmpty()) {
+            try {
                 var fallbackBuilder = SearchRequest.builder()
                         .query(queryText)
                         .topK(topK);
@@ -308,8 +316,12 @@ public class ChatController {
                     fallbackBuilder.similarityThreshold(threshold);
                 }
                 docs = vectorStore.similaritySearch(fallbackBuilder.build());
+            } catch (Exception ex) {
+                System.err.println("Error en búsqueda vectorial fallback [" + queryText + "]: " + ex.getMessage());
             }
+        }
 
+        if (docs != null) {
             for (Document d : docs) {
                 // Excluir cualquier documento del usuario que pudiera colarse en un fallback
                 Map<String, Object> meta = d.getMetadata();
@@ -325,29 +337,51 @@ public class ChatController {
                     combined.add(d);
                 }
             }
-        } catch (Exception e) {
-            System.err.println("Error en búsqueda vectorial [" + queryText + "]: " + e.getMessage());
         }
     }
 
     /**
-     * Descomposición sintáctica pura basada en la estructura gramatical del español,
-     * sin palabras ni artículos de tránsito quemados.
+     * Descomposición mediante Ventana Deslizante Léxica con Solapamiento (Overlapping Word Sliding Window).
+     * 100% agnóstico a palabras quemadas, ortografía o signos de puntuación del usuario.
      */
     private List<String> decomposeQuerySyntactically(String query) {
         if (query == null || query.isBlank()) return List.of();
+        String cleanQuery = query.trim().replaceAll("\\s+", " ");
 
-        // Consultas directas van en una sola búsqueda
-        if (query.length() < 90) {
-            return List.of(query.trim());
+        String[] words = cleanQuery.split(" ");
+
+        // Si la consulta es corta (16 palabras o menos), la búsqueda global única es suficiente
+        if (words.length <= 16) {
+            return List.of(cleanQuery);
         }
 
-        // Divide por numeraciones (1., 2.), punto y coma, o conectores aditivos naturales del español
-        String[] parts = query.split("(?:\\b[1-4]\\.\\s*)|;|(?:\\s+(?:y además|además|asimismo|también|por otro lado|adicionalmente)\\s+)");
+        List<String> queries = new ArrayList<>();
+        // 1. Siempre incluimos primero la consulta global completa (captura el contexto general)
+        queries.add(cleanQuery);
 
-        List<String> subQueries = Arrays.stream(parts)
-                .map(String::trim)
-                .filter(s -> s.length() >= 18)
+        // 2. Ventana deslizante de 12 palabras con paso (stride) de 8 palabras (solapamiento de 4 palabras)
+        int windowSize = 12;
+        int stride = 8;
+
+        for (int start = 0; start < words.length && queries.size() < 5; start += stride) {
+            int end = Math.min(start + windowSize, words.length);
+            if (end - start < 7 && start > 0) {
+                start = Math.max(0, words.length - windowSize);
+                end = words.length;
+            }
+
+            String windowChunk = String.join(" ", Arrays.copyOfRange(words, start, end)).trim();
+            if (!windowChunk.equalsIgnoreCase(cleanQuery) && !queries.contains(windowChunk) && windowChunk.length() >= 20) {
+                queries.add(windowChunk);
+            }
+
+            if (end == words.length) {
+                break;
+            }
+        }
+
+        return queries;
+    }
                 .limit(4)
                 .collect(Collectors.toList());
 
