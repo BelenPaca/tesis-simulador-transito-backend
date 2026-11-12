@@ -43,24 +43,16 @@ public class ChatController {
     ConversationService conversationService;
 
     public ChatController(ChatClient.Builder builder, RestConfiguration configuration) {
-        this.chatClient = builder
-                .defaultAdvisors(
-                        new SimpleLoggerAdvisor()
-                )
-                .build();
+        this.chatClient = builder.defaultAdvisors(new SimpleLoggerAdvisor()).build();
         this.configuration = configuration;
     }
 
     @PostMapping(path = "/api/chat", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> streamChat(
-            @RequestBody ChatRequest request,
-            @RequestHeader(value = "X-User-Id", required = false) String headerUserId) {
+    public Flux<ServerSentEvent<String>> streamChat(@RequestBody ChatRequest request, @RequestHeader(value = "X-User-Id", required = false) String headerUserId) {
 
         var message = request.message();
         var conversationId = request.conversationId() != null ? request.conversationId() : UUID.randomUUID().toString();
-        var userId = request.userId() != null && !request.userId().isBlank()
-                ? request.userId()
-                : (headerUserId != null && !headerUserId.isBlank() ? headerUserId : "invitado");
+        var userId = request.userId() != null && !request.userId().isBlank() ? request.userId() : (headerUserId != null && !headerUserId.isBlank() ? headerUserId : "invitado");
 
         if (message == null || message.isBlank()) {
             throw new IllegalArgumentException("El mensaje no puede estar vacío");
@@ -87,82 +79,13 @@ public class ChatController {
             sessionAttachedFiles = List.of(request.attachedFileName().trim());
         }
 
-        List<Document> userFileDocs = new ArrayList<>();
-        List<Document> officialLawDocs = new ArrayList<>();
+        // 3. Documentos adjuntos del usuario (hasta 15 chunks para cubrir informes periciales completos)
+        List<Document> userFileDocs = retrieveUserSessionDocuments(sessionAttachedFiles, message);
 
-        if (!sessionAttachedFiles.isEmpty()) {
-            // Buscar fragmentos para cada uno de los archivos vinculados a la conversación
-            Set<String> seenChunkIds = new HashSet<>();
-            for (String attachedFile : sessionAttachedFiles) {
-                String safeFile = attachedFile.replace("'", "");
-                String userDocQuery = message.length() < 20 ? (safeFile + " " + message) : message;
-                List<Document> currentFileDocs = new ArrayList<>();
+        // 4. Recuperación de leyes oficiales con descomposición sintáctica, filtro matemático Coseno y puente de hechos
+        List<Document> officialLawDocs = retrieveOfficialLawsSyntactically(effectiveQuery, userFileDocs);
 
-                // ESTRATEGIA 1: filtro exacto por nombre de archivo en Qdrant (en la raíz o en metadata)
-                try {
-                    currentFileDocs = vectorStore.similaritySearch(SearchRequest.builder()
-                            .query(userDocQuery)
-                            .topK(10)
-                            .filterExpression("source == '" + safeFile + "' || file_name == '" + safeFile + "' || metadata.source == '" + safeFile + "' || metadata.file_name == '" + safeFile + "'")
-                            .build());
-                } catch (Exception e) {
-                    System.err.println("Filtro source fallo: " + e.getMessage());
-                }
-
-                // ESTRATEGIA 2: filtro seguro que NUNCA acepta otros archivos. Solo busca chunks que coincidan con ESTE archivo.
-                if (currentFileDocs.isEmpty()) {
-                    try {
-                        List<Document> allResults = vectorStore.similaritySearch(SearchRequest.builder()
-                                .query(userDocQuery)
-                                .topK(30)
-                                .build());
-                        String finalSafeFile = safeFile.toLowerCase().trim();
-                        currentFileDocs = allResults.stream()
-                                .filter(d -> {
-                                    Map<String, Object> meta = d.getMetadata();
-                                    if (meta == null) return false;
-                                    String src  = meta.getOrDefault("source", "").toString().toLowerCase().trim();
-                                    String fn   = meta.getOrDefault("file_name", "").toString().toLowerCase().trim();
-                                    String orig = meta.getOrDefault("original_filename", "").toString().toLowerCase().trim();
-                                    return finalSafeFile.equals(src)
-                                            || finalSafeFile.equals(fn)
-                                            || finalSafeFile.equals(orig)
-                                            || (src.contains(finalSafeFile) && !src.isBlank())
-                                            || (fn.contains(finalSafeFile) && !fn.isBlank());
-                                })
-                                .collect(Collectors.toList());
-                    } catch (Exception e) {
-                        System.err.println("Busqueda de respaldo por archivo fallo: " + e.getMessage());
-                    }
-                }
-
-                for (Document d : currentFileDocs) {
-                    if (d.getId() != null && seenChunkIds.add(d.getId())) {
-                        userFileDocs.add(d);
-                    } else if (d.getId() == null) {
-                        userFileDocs.add(d);
-                    }
-                }
-            }
-            System.out.println("Total fragmentos recuperados para documentos de la sesión: " + userFileDocs.size());
-
-            // Solo buscar leyes oficiales complementarias si la consulta no es una inspección pura del documento
-            boolean isPureDocInspection = isDocumentInspectionQuery(message);
-            if (!isPureDocInspection) {
-                officialLawDocs = retrieveOfficialLawsWithDecomposition(effectiveQuery);
-            }
-        } else {
-            // Si el usuario pregunta "de que trata" o "resúmelo" pero NO ha subido ningún documento aún a la conversación,
-            // no inyectar leyes oficiales al azar para evitar que invente o resuma el Reglamento LOTTTSV
-            boolean isPureDocInspection = isDocumentInspectionQuery(message);
-            if (!isPureDocInspection) {
-                officialLawDocs = retrieveOfficialLawsWithDecomposition(effectiveQuery);
-            } else {
-                System.out.println("Consulta de inspección recibida sin documento adjunto en la sesión. Omitiendo leyes oficiales.");
-            }
-        }
-
-        // 4. Construir fuentes legales de Qdrant
+        // 5. Construir fuentes legales de Qdrant
         List<Map<String, String>> realSources = buildLegalSources(officialLawDocs);
 
         // Construir contexto organizado por secciones claramente delimitadas
@@ -194,26 +117,14 @@ public class ChatController {
         String systemMessage;
         try {
             String template = new String(systemPrompt.getContentAsByteArray(), StandardCharsets.UTF_8);
-            systemMessage = template
-                    .replace("{normativa}", context.isBlank() ? "No se encontraron fragmentos normativos para esta consulta." : context)
-                    .replace("{historial}", historySection);
+            systemMessage = template.replace("{normativa}", context.isBlank() ? "No se encontraron fragmentos normativos para esta consulta." : context).replace("{historial}", historySection);
         } catch (java.io.IOException e) {
             throw new RuntimeException("Error cargando el archivo systemPrompt.st", e);
         }
 
         StringBuilder fullResponse = new StringBuilder();
 
-        Flux<ServerSentEvent<String>> tokens = chatClient.prompt()
-                .system(systemMessage)
-                .user(message)
-                .stream()
-                .content()
-                .doOnNext(fullResponse::append)
-                .map(chunk -> ServerSentEvent.<String>builder()
-                        .event("token")
-                        .data(Base64.getEncoder().encodeToString(chunk.getBytes(StandardCharsets.UTF_8)))
-                        .build()
-                );
+        Flux<ServerSentEvent<String>> tokens = chatClient.prompt().system(systemMessage).user(message).stream().content().doOnNext(fullResponse::append).map(chunk -> ServerSentEvent.<String>builder().event("token").data(Base64.getEncoder().encodeToString(chunk.getBytes(StandardCharsets.UTF_8))).build());
 
         // 6. Preparar bloque de fuentes legales reales [LEGAL_SOURCES]
         String sourcesJson;
@@ -224,17 +135,9 @@ public class ChatController {
         }
         final String finalSourcesJson = sourcesJson;
 
-        String sourcesChunk = (!finalSourcesJson.isBlank() && !finalSourcesJson.equals("[]"))
-                ? "\n[LEGAL_SOURCES]" + finalSourcesJson + "[/LEGAL_SOURCES]"
-                : "";
+        String sourcesChunk = (!finalSourcesJson.isBlank() && !finalSourcesJson.equals("[]")) ? "\n[LEGAL_SOURCES]" + finalSourcesJson + "[/LEGAL_SOURCES]" : "";
 
-        Flux<ServerSentEvent<String>> sourcesFlux = sourcesChunk.isBlank()
-                ? Flux.empty()
-                : Flux.just(ServerSentEvent.<String>builder()
-                        .event("token")
-                        .data(Base64.getEncoder().encodeToString(sourcesChunk.getBytes(StandardCharsets.UTF_8)))
-                        .build()
-                );
+        Flux<ServerSentEvent<String>> sourcesFlux = sourcesChunk.isBlank() ? Flux.empty() : Flux.just(ServerSentEvent.<String>builder().event("token").data(Base64.getEncoder().encodeToString(sourcesChunk.getBytes(StandardCharsets.UTF_8))).build());
 
         Flux<ServerSentEvent<String>> done = Flux.defer(() -> {
             if (!fullResponse.isEmpty()) {
@@ -248,37 +151,90 @@ public class ChatController {
                     System.err.println("Error guardando respuesta del asistente: " + e.getMessage());
                 }
             }
-            return Flux.just(
-                    ServerSentEvent.<String>builder()
-                            .event("done")
-                            .data("[DONE]")
-                            .build()
-            );
+            return Flux.just(ServerSentEvent.<String>builder().event("done").data("[DONE]").build());
         });
 
-        return tokens.concatWith(sourcesFlux).concatWith(done)
-                .onErrorResume(error -> Flux.just(
-                                ServerSentEvent.<String>builder()
-                                        .event("error")
-                                        .data(error.getMessage())
-                                        .build()
-                        )
-                );
+        return tokens.concatWith(sourcesFlux).concatWith(done).onErrorResume(error -> Flux.just(ServerSentEvent.<String>builder().event("error").data(error.getMessage()).build()));
     }
 
+    /**
+     * Recupera exclusivamente los fragmentos de los archivos subidos por el usuario en la sesión actual.
+     * Utiliza un topK de 15 para abarcar informes periciales y documentos completos de hasta 15 páginas.
+     */
+    private List<Document> retrieveUserSessionDocuments(List<String> sessionAttachedFiles, String message) {
+        if (sessionAttachedFiles == null || sessionAttachedFiles.isEmpty()) {
+            return List.of();
+        }
+        List<Document> userFileDocs = new ArrayList<>();
+        Set<String> seenChunkIds = new HashSet<>();
+
+        for (String attachedFile : sessionAttachedFiles) {
+            String safeFile = attachedFile.replace("'", "").trim();
+            String userDocQuery = message.length() < 25 ? (safeFile + " " + message) : message;
+            List<Document> currentFileDocs = new ArrayList<>();
+
+            // ESTRATEGIA 1: filtro exacto por nombre de archivo en Qdrant
+            try {
+                currentFileDocs = vectorStore.similaritySearch(SearchRequest.builder()
+                        .query(userDocQuery)
+                        .topK(15)
+                        .filterExpression("source == '" + safeFile + "' || file_name == '" + safeFile + "' || metadata.source == '" + safeFile + "' || metadata.file_name == '" + safeFile + "'")
+                        .build());
+            } catch (Exception e) {
+                System.err.println("Filtro source fallo: " + e.getMessage());
+            }
+
+            // ESTRATEGIA 2: filtro seguro de respaldo que solo acepta chunks que coincidan con este archivo
+            if (currentFileDocs.isEmpty()) {
+                try {
+                    List<Document> allResults = vectorStore.similaritySearch(SearchRequest.builder()
+                            .query(userDocQuery)
+                            .topK(35)
+                            .build());
+                    String finalSafeFile = safeFile.toLowerCase().trim();
+                    currentFileDocs = allResults.stream().filter(d -> {
+                        Map<String, Object> meta = d.getMetadata();
+                        if (meta == null) return false;
+                        String src = meta.getOrDefault("source", "").toString().toLowerCase().trim();
+                        String fn = meta.getOrDefault("file_name", "").toString().toLowerCase().trim();
+                        String orig = meta.getOrDefault("original_filename", "").toString().toLowerCase().trim();
+                        return finalSafeFile.equals(src) || finalSafeFile.equals(fn) || finalSafeFile.equals(orig)
+                                || (src.contains(finalSafeFile) && !src.isBlank())
+                                || (fn.contains(finalSafeFile) && !fn.isBlank());
+                    }).collect(Collectors.toList());
+                } catch (Exception e) {
+                    System.err.println("Busqueda de respaldo por archivo fallo: " + e.getMessage());
+                }
+            }
+
+            for (Document d : currentFileDocs) {
+                if (d.getId() != null && seenChunkIds.add(d.getId())) {
+                    userFileDocs.add(d);
+                } else if (d.getId() == null) {
+                    userFileDocs.add(d);
+                }
+            }
+        }
+        System.out.println("Total fragmentos recuperados para documentos de la sesión: " + userFileDocs.size());
+        return userFileDocs;
+    }
+
+    /**
+     * Contextualiza la consulta si es una repregunta breve (< 80 caracteres),
+     * vinculando temáticamente el último turno del usuario para que los embeddings mantengan el hilo.
+     */
     private String buildEffectiveSearchQuery(String currentMessage, List<ChatMessage> previousMessages) {
         if (previousMessages == null || previousMessages.isEmpty()) {
             return currentMessage;
         }
 
-        if (isFollowUpQuestion(currentMessage)) {
-            // Localizar la última pregunta temática formulada por el usuario
+        if (currentMessage.trim().length() < 80) {
             for (int i = previousMessages.size() - 1; i >= 0; i--) {
                 ChatMessage m = previousMessages.get(i);
                 if ("user".equalsIgnoreCase(m.role()) && !m.content().equalsIgnoreCase(currentMessage)) {
                     String prev = m.content().trim();
                     if (!prev.isBlank()) {
-                        return prev + " " + currentMessage;
+                        return prev + " " + currentMessage.trim();
                     }
                 }
             }
@@ -287,79 +243,42 @@ public class ChatController {
     }
 
     /**
-     * Descompone consultas compuestas en sub-consultas enfocadas y busca en Qdrant
-     * deduplicando fragmentos por ID y texto para garantizar cobertura completa (alcohol, velocidad, celular, etc.).
+     * Recupera leyes oficiales con descomposición sintáctica pura y filtro matemático Coseno (similarityThreshold).
+     * Si el usuario subió un documento y hace una consulta jurídica/sancionatoria sobre el mismo, activa el puente de hechos.
      */
-    private List<Document> retrieveOfficialLawsWithDecomposition(String effectiveQuery) {
-        List<String> subQueries = decomposeQueryIfCompound(effectiveQuery);
+    private List<Document> retrieveOfficialLawsSyntactically(String effectiveQuery, List<Document> userFileDocs) {
         List<Document> combined = new ArrayList<>();
         Set<String> seenIdentifiers = new HashSet<>();
 
-        if (subQueries.size() <= 1) {
-            // Consulta simple o directa: Búsqueda tradicional con topK amplio
-            try {
-                var search = SearchRequest.builder()
-                        .query(effectiveQuery)
-                        .topK(10)
-                        .filterExpression("tipo == 'ley_oficial'")
-                        .build();
-                List<Document> docs = vectorStore.similaritySearch(search);
-                if (docs.isEmpty()) {
-                    docs = vectorStore.similaritySearch(SearchRequest.builder().query(effectiveQuery).topK(10).build());
-                }
-                return docs;
-            } catch (Exception e) {
-                System.err.println("Fallo búsqueda simple de leyes oficiales: " + e.getMessage());
-                try {
-                    return vectorStore.similaritySearch(SearchRequest.builder().query(effectiveQuery).topK(10).build());
-                } catch (Exception ex) {
-                    return List.of();
-                }
-            }
-        }
+        List<String> subQueries = decomposeQuerySyntactically(effectiveQuery);
+        int topKPerQuery = subQueries.size() <= 1 ? 8 : 4;
+        double threshold = 0.55; // Umbral matemático Coseno para descartar consultas no jurídicas ("resúmelo", "de qué trata")
 
-        // Consulta compuesta: Ejecutar búsqueda independiente por cada intención
-        System.out.println("Consulta compuesta detectada. Ejecutando Query Decomposition con " + subQueries.size() + " sub-consultas: " + subQueries);
         for (String subQ : subQueries) {
-            try {
-                var search = SearchRequest.builder()
-                        .query(subQ)
-                        .topK(4)
-                        .filterExpression("tipo == 'ley_oficial'")
-                        .build();
-                List<Document> docs = vectorStore.similaritySearch(search);
-                if (docs.isEmpty()) {
-                    docs = vectorStore.similaritySearch(SearchRequest.builder().query(subQ).topK(4).build());
-                }
-
-                for (Document d : docs) {
-                    String docText = d.getText() != null ? d.getText().trim() : "";
-                    String snippetKey = docText.length() > 60 ? docText.substring(0, 60) : docText;
-                    String idKey = d.getId() != null ? d.getId() : snippetKey;
-
-                    if (seenIdentifiers.add(idKey)) {
-                        combined.add(d);
-                    }
-                }
-            } catch (Exception e) {
-                System.err.println("Error en sub-consulta [" + subQ + "]: " + e.getMessage());
-            }
+            addUniqueLawDocs(combined, seenIdentifiers, subQ, topKPerQuery, threshold);
         }
 
-        // Fallback de seguridad: Si por alguna razón la descomposición no trajo suficientes documentos, complementar con búsqueda directa
-        if (combined.size() < 4) {
-            try {
-                List<Document> fallbackDocs = vectorStore.similaritySearch(SearchRequest.builder().query(effectiveQuery).topK(10).build());
-                for (Document d : fallbackDocs) {
-                    String docText = d.getText() != null ? d.getText().trim() : "";
-                    String snippetKey = docText.length() > 60 ? docText.substring(0, 60) : docText;
-                    String idKey = d.getId() != null ? d.getId() : snippetKey;
-                    if (seenIdentifiers.add(idKey)) {
-                        combined.add(d);
-                    }
+        // PUENTE AUTOMÁTICO DE HECHOS: Si hay un documento adjunto Y la pregunta del usuario superó el umbral legal
+        // (es decir, pide sanciones/leyes sobre el documento), buscamos también en Qdrant usando los hechos del PDF
+        if (!userFileDocs.isEmpty() && !combined.isEmpty()) {
+            String docFactsQuery = userFileDocs.stream()
+                    .filter(d -> {
+                        String t = d.getText() != null ? d.getText().toLowerCase() : "";
+                        return t.contains("accidente") || t.contains("siniestro") || t.contains("velocidad")
+                                || t.contains("daño") || t.contains("alcohol") || t.contains("alcoholemia")
+                                || t.contains("conductor") || t.contains("lesion") || t.contains("lesión")
+                                || t.contains("vehículo") || t.contains("vehiculo");
+                    })
+                    .findFirst()
+                    .map(Document::getText)
+                    .orElseGet(() -> userFileDocs.get(0).getText());
+
+            if (docFactsQuery != null && !docFactsQuery.isBlank()) {
+                String cleanFacts = docFactsQuery.replaceAll("\\s+", " ").trim();
+                if (cleanFacts.length() > 420) {
+                    cleanFacts = cleanFacts.substring(0, 420);
                 }
-            } catch (Exception ex) {
-                System.err.println("Fallback general de leyes: " + ex.getMessage());
+                addUniqueLawDocs(combined, seenIdentifiers, cleanFacts, 6, threshold);
             }
         }
 
@@ -367,112 +286,69 @@ public class ChatController {
         return combined;
     }
 
-    /**
-     * Identifica si la consulta combina múltiples temas legales y la divide en sub-consultas enfocadas.
-     */
-    private List<String> decomposeQueryIfCompound(String query) {
-        if (query == null || query.isBlank()) return List.of();
-        String lower = query.toLowerCase();
+    private void addUniqueLawDocs(List<Document> combined, Set<String> seenIdentifiers, String queryText, int topK, double threshold) {
+        try {
+            var search = SearchRequest.builder()
+                    .query(queryText)
+                    .topK(topK)
+                    .similarityThreshold(threshold)
+                    .filterExpression("tipo == 'ley_oficial'")
+                    .build();
+            List<Document> docs = vectorStore.similaritySearch(search);
 
-        // Detectar si contiene múltiples intenciones o escenarios
-        boolean hasAlcohol = lower.contains("alcohol") || lower.contains("embriaguez") || lower.contains("ebrio") || lower.contains("g/l") || lower.contains("aliento");
-        boolean hasVelocidad = lower.contains("velocidad") || lower.contains("km/h") || lower.contains("rango moderado") || lower.contains("radar") || lower.contains("carretera");
-        boolean hasCelular = lower.contains("celular") || lower.contains("teléfono") || lower.contains("telefono") || lower.contains("móvil") || lower.contains("movil") || lower.contains("dispositivo");
-        boolean hasSemaforo = lower.contains("semáforo") || lower.contains("semaforo") || lower.contains("luz roja");
-        boolean hasLicencia = lower.contains("licencia") || lower.contains("sin licencia") || lower.contains("caducada");
+            // Fallback blindado: conserva siempre el similarityThreshold para no traer artículos irrelevantes
+            if (docs.isEmpty()) {
+                docs = vectorStore.similaritySearch(
+                        SearchRequest.builder()
+                                .query(queryText)
+                                .topK(topK)
+                                .similarityThreshold(threshold)
+                                .build()
+                );
+            }
 
-        int scenarios = (hasAlcohol ? 1 : 0) + (hasVelocidad ? 1 : 0) + (hasCelular ? 1 : 0) + (hasSemaforo ? 1 : 0) + (hasLicencia ? 1 : 0);
+            for (Document d : docs) {
+                // Excluir cualquier documento del usuario que pudiera colarse en un fallback
+                Map<String, Object> meta = d.getMetadata();
+                if (meta != null && "usuario_adjunto".equalsIgnoreCase(String.valueOf(meta.get("tipo")))) {
+                    continue;
+                }
 
-        if (scenarios >= 2) {
-            List<String> list = new ArrayList<>();
-            if (hasAlcohol) list.add("sancion escala nivel de alcohol conductores estado embriaguez Art 385 COIP");
-            if (hasVelocidad) list.add("limite de velocidad rango moderado fuera de rango carreteras Art 386 389 COIP Art 191 Reglamento");
-            if (hasCelular) list.add("contravencion uso de telefono celular dispositivos moviles al conducir Art 391 COIP");
-            if (hasSemaforo) list.add("contravencion desobedecer luz roja semaforo agente transito COIP");
-            if (hasLicencia) list.add("conducir sin haber obtenido licencia o con licencia caducada COIP");
-            return list;
-        }
+                String docText = d.getText() != null ? d.getText().trim() : "";
+                String snippetKey = docText.length() > 60 ? docText.substring(0, 60) : docText;
+                String idKey = d.getId() != null ? d.getId() : snippetKey;
 
-        // Si contiene conjunciones o numeraciones explícitas (1., 2., 3. o 'además', 'también')
-        if (query.contains("1.") && query.contains("2.")) {
-            String[] parts = query.split("\\b(?:1\\.|2\\.|3\\.|4\\.)\\s*");
-            List<String> cleanParts = new ArrayList<>();
-            for (String p : parts) {
-                String trimmed = p.replaceAll("[\n,;]+", " ").trim();
-                if (trimmed.length() >= 10) {
-                    cleanParts.add(trimmed);
+                if (seenIdentifiers.add(idKey)) {
+                    combined.add(d);
                 }
             }
-            if (cleanParts.size() >= 2) {
-                return cleanParts.subList(0, Math.min(cleanParts.size(), 4));
-            }
+        } catch (Exception e) {
+            System.err.println("Error en búsqueda vectorial [" + queryText + "]: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Descomposición sintáctica pura basada en la estructura gramatical del español,
+     * sin palabras ni artículos de tránsito quemados.
+     */
+    private List<String> decomposeQuerySyntactically(String query) {
+        if (query == null || query.isBlank()) return List.of();
+
+        // Consultas directas van en una sola búsqueda
+        if (query.length() < 90) {
+            return List.of(query.trim());
         }
 
-        return List.of(query);
-    }
+        // Divide por numeraciones (1., 2.), punto y coma, o conectores aditivos naturales del español
+        String[] parts = query.split("(?:\\b[1-4]\\.\\s*)|;|(?:\\s+(?:y además|además|asimismo|también|por otro lado|adicionalmente)\\s+)");
 
-    private boolean isDocumentInspectionQuery(String text) {
-        if (text == null) return false;
-        String clean = text.toLowerCase().trim().replaceAll("[¿?\\.,!¡]+", "").trim();
-        return clean.equals("de que trata") ||
-               clean.equals("de que habla") ||
-               clean.equals("de que se trata") ||
-               clean.equals("de que se habla") ||
-               clean.equals("que dice") ||
-               clean.equals("resumelo") ||
-               clean.equals("resumen") ||
-               clean.equals("explicamelo") ||
-               clean.contains("de que habla") ||
-               clean.contains("de qué habla") ||
-               clean.contains("resumen") ||
-               clean.contains("resume") ||
-               clean.contains("resúmelo") ||
-               clean.contains("resumelo") ||
-               clean.contains("que contiene") ||
-               clean.contains("qué contiene") ||
-               clean.contains("analiza este documento") ||
-               clean.contains("analiza el documento") ||
-               clean.contains("de que trata") ||
-               clean.contains("de qué trata") ||
-               clean.contains("explica el documento") ||
-               clean.contains("contenido del documento") ||
-               clean.contains("explicame de que trata") ||
-               clean.contains("explícame de qué trata");
-    }
+        List<String> subQueries = Arrays.stream(parts)
+                .map(String::trim)
+                .filter(s -> s.length() >= 18)
+                .limit(4)
+                .collect(Collectors.toList());
 
-    private boolean isFollowUpQuestion(String text) {
-        if (text == null) return false;
-        String clean = text.toLowerCase().trim();
-        if (clean.length() <= 35) return true;
-        return clean.contains("punto") ||
-               clean.contains("numeral") ||
-               clean.contains("artículo") ||
-               clean.contains("articulo") ||
-               clean.contains("inciso") ||
-               clean.contains("paso") ||
-               clean.contains("anterior") ||
-               clean.contains("primero") ||
-               clean.contains("segundo") ||
-               clean.contains("tercero") ||
-               clean.contains("cuarto") ||
-               clean.contains("quinto") ||
-               clean.contains("sexto") ||
-               clean.contains("séptimo") ||
-               clean.contains("septimo") ||
-               clean.contains("octavo") ||
-               clean.contains("noveno") ||
-               clean.contains("décimo") ||
-               clean.contains("decimo") ||
-               clean.contains("sanción") ||
-               clean.contains("sancion") ||
-               clean.contains("multa") ||
-               clean.contains("y eso") ||
-               clean.contains("por qué") ||
-               clean.contains("por que") ||
-               clean.contains("qué significa") ||
-               clean.contains("que significa") ||
-               clean.contains("explica más") ||
-               clean.contains("explícame más");
+        return subQueries.isEmpty() ? List.of(query.trim()) : subQueries;
     }
 
     private String formatRecentHistory(List<ChatMessage> previousMessages) {
@@ -488,10 +364,7 @@ public class ChatController {
         for (int i = start; i < previousMessages.size(); i++) {
             ChatMessage msg = previousMessages.get(i);
             String roleName = "user".equalsIgnoreCase(msg.role()) ? "Usuario" : "TransiAI (Asistente)";
-            String cleanContent = msg.content()
-                    .replaceAll("\\[INFRACTION_DATA\\][\\s\\S]*?\\[/INFRACTION_DATA\\]", "")
-                    .replaceAll("\\[LEGAL_SOURCES\\][\\s\\S]*?\\[/LEGAL_SOURCES\\]", "")
-                    .trim();
+            String cleanContent = msg.content().replaceAll("\\[INFRACTION_DATA\\][\\s\\S]*?\\[/INFRACTION_DATA\\]", "").replaceAll("\\[LEGAL_SOURCES\\][\\s\\S]*?\\[/LEGAL_SOURCES\\]", "").trim();
             if (!cleanContent.isBlank()) {
                 sb.append(roleName).append(": ").append(cleanContent).append("\n\n");
             }
