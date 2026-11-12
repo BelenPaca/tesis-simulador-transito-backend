@@ -252,7 +252,9 @@ public class ChatController {
 
         List<String> subQueries = decomposeQuerySyntactically(effectiveQuery);
         int topKPerQuery = subQueries.size() <= 1 ? 8 : 4;
-        double threshold = 0.55; // Umbral matemático Coseno para descartar consultas no jurídicas ("resúmelo", "de qué trata")
+        // Si NO hay documento adjunto (consulta normal), threshold = 0.0 (trae siempre por topK sin bloquear nada).
+        // Si SÍ hay documento adjunto, threshold = 0.43 para que "resúmelo" / "de qué trata" devuelva 0 leyes oficiales.
+        double threshold = userFileDocs.isEmpty() ? 0.0 : 0.43;
 
         for (String subQ : subQueries) {
             addUniqueLawDocs(combined, seenIdentifiers, subQ, topKPerQuery, threshold);
@@ -286,23 +288,26 @@ public class ChatController {
 
     private void addUniqueLawDocs(List<Document> combined, Set<String> seenIdentifiers, String queryText, int topK, double threshold) {
         try {
-            var search = SearchRequest.builder()
+            var searchBuilder = SearchRequest.builder()
                     .query(queryText)
                     .topK(topK)
-                    .similarityThreshold(threshold)
-                    .filterExpression("tipo == 'ley_oficial'")
-                    .build();
-            List<Document> docs = vectorStore.similaritySearch(search);
+                    .filterExpression("tipo == 'ley_oficial'");
 
-            // Fallback blindado: conserva siempre el similarityThreshold para no traer artículos irrelevantes
+            if (threshold > 0.0) {
+                searchBuilder.similarityThreshold(threshold);
+            }
+
+            List<Document> docs = vectorStore.similaritySearch(searchBuilder.build());
+
+            // Fallback si el metadato 'tipo' no coincidió en Qdrant (mantiene threshold si hay archivo adjunto)
             if (docs.isEmpty()) {
-                docs = vectorStore.similaritySearch(
-                        SearchRequest.builder()
-                                .query(queryText)
-                                .topK(topK)
-                                .similarityThreshold(threshold)
-                                .build()
-                );
+                var fallbackBuilder = SearchRequest.builder()
+                        .query(queryText)
+                        .topK(topK);
+                if (threshold > 0.0) {
+                    fallbackBuilder.similarityThreshold(threshold);
+                }
+                docs = vectorStore.similaritySearch(fallbackBuilder.build());
             }
 
             for (Document d : docs) {
