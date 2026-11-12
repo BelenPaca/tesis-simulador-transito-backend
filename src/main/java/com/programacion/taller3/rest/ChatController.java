@@ -382,11 +382,6 @@ public class ChatController {
 
         return queries;
     }
-                .limit(4)
-                .collect(Collectors.toList());
-
-        return subQueries.isEmpty() ? List.of(query.trim()) : subQueries;
-    }
 
     private String formatRecentHistory(List<ChatMessage> previousMessages) {
         if (previousMessages == null || previousMessages.isEmpty()) {
