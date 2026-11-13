@@ -422,11 +422,11 @@ public class ChatController {
         queries.add(cleanQuery);
 
         // 2. Ventana deslizante de 12 palabras con paso (stride) de 8 palabras (solapamiento de 4 palabras)
-        // Limitamos a máximo 3 consultas en total para optimizar la latencia en 1.5s sin perder cobertura
+        // Permite hasta 5 consultas y garantiza siempre la inclusión de la cola final de la pregunta
         int windowSize = 12;
         int stride = 8;
 
-        for (int start = 0; start < words.length && queries.size() < 3; start += stride) {
+        for (int start = 0; start < words.length && queries.size() < 5; start += stride) {
             int end = Math.min(start + windowSize, words.length);
             if (end - start < 7 && start > 0) {
                 start = Math.max(0, words.length - windowSize);
@@ -440,6 +440,15 @@ public class ChatController {
 
             if (end == words.length) {
                 break;
+            }
+        }
+
+        // Garantizar que la ventana final (la cola de la pregunta, e.g. "llantas lisas") siempre esté presente
+        if (words.length > windowSize) {
+            int tailStart = Math.max(0, words.length - windowSize);
+            String tailChunk = String.join(" ", Arrays.copyOfRange(words, tailStart, words.length)).trim();
+            if (!tailChunk.equalsIgnoreCase(cleanQuery) && !queries.contains(tailChunk) && tailChunk.length() >= 15) {
+                queries.add(tailChunk);
             }
         }
 
