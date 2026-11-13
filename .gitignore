@@ -18,3 +18,7 @@ inbound/*.pdf
 .env
 *.env
 
+### Informes Privados ###
+INFORME_*.md
+
+
