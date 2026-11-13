@@ -137,20 +137,18 @@ public class ChatController {
 
         Flux<ServerSentEvent<String>> sourcesFlux = Flux.defer(() -> {
             String answer = fullResponse.toString().toLowerCase();
-            boolean isOutOfDomainOrNonTransit = answer.contains("únicamente puedo responder")
-                    || answer.contains("unicamente puedo responder")
-                    || answer.contains("como asistente legal especializado")
-                    || answer.contains("no contiene información sobre infracciones")
-                    || answer.contains("no contiene informacion sobre infracciones")
-                    || answer.contains("no contiene información sobre normativa vial")
-                    || answer.contains("no contiene informacion sobre normativa vial")
-                    || answer.contains("no contiene infracciones")
-                    || answer.contains("no guarda relación con tránsito")
-                    || answer.contains("no guarda relacion con transito")
-                    || answer.contains("no corresponde a materia de tránsito")
-                    || answer.contains("no corresponde a materia de transito");
+            // Verificación de Grounding RAG Puro: solo se emiten fuentes si la respuesta generada
+            // realmente cita artículos legales, emite el bloque de infracciones o menciona la ley consultada.
+            boolean hasLegalGrounding = answer.contains("art.")
+                    || answer.contains("artículo")
+                    || answer.contains("articulo")
+                    || answer.contains("[infraction_data]")
+                    || realSources.stream().anyMatch(s -> {
+                        String badge = s.getOrDefault("badge", "").toLowerCase().trim();
+                        return !badge.isBlank() && answer.contains(badge);
+                    });
 
-            if (isOutOfDomainOrNonTransit || finalSourcesJson.isBlank() || finalSourcesJson.equals("[]")) {
+            if (!hasLegalGrounding || finalSourcesJson.isBlank() || finalSourcesJson.equals("[]")) {
                 return Flux.empty();
             }
 
@@ -166,20 +164,16 @@ public class ChatController {
                 try {
                     String toSave = fullResponse.toString();
                     String answer = toSave.toLowerCase();
-                    boolean isOutOfDomainOrNonTransit = answer.contains("únicamente puedo responder")
-                            || answer.contains("unicamente puedo responder")
-                            || answer.contains("como asistente legal especializado")
-                            || answer.contains("no contiene información sobre infracciones")
-                            || answer.contains("no contiene informacion sobre infracciones")
-                            || answer.contains("no contiene información sobre normativa vial")
-                            || answer.contains("no contiene informacion sobre normativa vial")
-                            || answer.contains("no contiene infracciones")
-                            || answer.contains("no guarda relación con tránsito")
-                            || answer.contains("no guarda relacion con transito")
-                            || answer.contains("no corresponde a materia de tránsito")
-                            || answer.contains("no corresponde a materia de transito");
+                    boolean hasLegalGrounding = answer.contains("art.")
+                            || answer.contains("artículo")
+                            || answer.contains("articulo")
+                            || answer.contains("[infraction_data]")
+                            || realSources.stream().anyMatch(s -> {
+                                String badge = s.getOrDefault("badge", "").toLowerCase().trim();
+                                return !badge.isBlank() && answer.contains(badge);
+                            });
 
-                    if (!isOutOfDomainOrNonTransit && !finalSourcesJson.isBlank() && !finalSourcesJson.equals("[]") && !toSave.contains("[LEGAL_SOURCES]")) {
+                    if (hasLegalGrounding && !finalSourcesJson.isBlank() && !finalSourcesJson.equals("[]") && !toSave.contains("[LEGAL_SOURCES]")) {
                         toSave += "\n[LEGAL_SOURCES]" + finalSourcesJson + "[/LEGAL_SOURCES]";
                     }
                     conversationService.saveMessage(conversationId, "assistant", toSave);
@@ -290,13 +284,20 @@ public class ChatController {
             return currentMessage;
         }
 
-        if (currentMessage.trim().length() < 80) {
+        String trimmed = currentMessage.trim();
+        // Si el mensaje es una micro-expresión (<= 7 caracteres, ej. "hola", "ok", "gracias"),
+        // no arrastra el historial para no contaminar saludos o cortesías con temas previos
+        if (trimmed.length() <= 7) {
+            return trimmed;
+        }
+
+        if (trimmed.length() < 80) {
             for (int i = previousMessages.size() - 1; i >= 0; i--) {
                 ChatMessage m = previousMessages.get(i);
                 if ("user".equalsIgnoreCase(m.role()) && !m.content().equalsIgnoreCase(currentMessage)) {
                     String prev = m.content().trim();
                     if (!prev.isBlank()) {
-                        return prev + " " + currentMessage.trim();
+                        return prev + " " + trimmed;
                     }
                 }
             }
@@ -310,13 +311,19 @@ public class ChatController {
      * 100% agnóstico a palabras quemadas, ortografía o signos de puntuación.
      */
     private List<Document> retrieveOfficialLawsSyntactically(String effectiveQuery, List<Document> userFileDocs) {
+        // Si la consulta es una micro-expresión sin documento adjunto (< 8 caracteres, ej. "hola", "ok"),
+        // no realiza viajes innecesarios a Qdrant y retorna lista vacía de inmediato
+        if (effectiveQuery == null || (effectiveQuery.trim().length() < 8 && userFileDocs.isEmpty())) {
+            return List.of();
+        }
+
         List<Document> combined = new ArrayList<>();
         Set<String> seenIdentifiers = new HashSet<>();
 
         List<String> subQueries = decomposeQuerySyntactically(effectiveQuery);
-        // Si NO hay documento adjunto (consulta normal), threshold = 0.0 (trae por topK sin bloquear nada).
+        // Si NO hay documento adjunto (consulta normal), threshold = 0.34 (filtra ruido semántico, saludos y temas ajenos).
         // Si SÍ hay documento adjunto, threshold = 0.55 para que preguntas como "resúmelo" o "de qué trata" devuelvan 0 leyes oficiales (evita contaminar con COGEP u otras normas).
-        double threshold = userFileDocs.isEmpty() ? 0.0 : 0.55;
+        double threshold = userFileDocs.isEmpty() ? 0.34 : 0.55;
 
         for (int i = 0; i < subQueries.size(); i++) {
             // La primera búsqueda (índice 0) es la consulta global con topK amplio de 14 fragmentos;
@@ -352,53 +359,37 @@ public class ChatController {
     }
 
     private void addUniqueLawDocs(List<Document> combined, Set<String> seenIdentifiers, String queryText, int topK, double threshold) {
-        List<Document> docs = new ArrayList<>();
         try {
             var searchBuilder = SearchRequest.builder()
                     .query(queryText)
-                    .topK(topK)
-                    .filterExpression("tipo == 'ley_oficial'");
+                    .topK(topK);
 
             if (threshold > 0.0) {
                 searchBuilder.similarityThreshold(threshold);
             }
 
-            docs = vectorStore.similaritySearch(searchBuilder.build());
+            // Un solo viaje directo a Qdrant (evita doble cálculo de embeddings y doble latencia de red)
+            List<Document> docs = vectorStore.similaritySearch(searchBuilder.build());
+
+            if (docs != null) {
+                for (Document d : docs) {
+                    // Excluir cualquier documento del usuario que pudiera colarse
+                    Map<String, Object> meta = d.getMetadata();
+                    if (meta != null && "usuario_adjunto".equalsIgnoreCase(String.valueOf(meta.get("tipo")))) {
+                        continue;
+                    }
+
+                    String docText = d.getText() != null ? d.getText().trim() : "";
+                    String snippetKey = docText.length() > 60 ? docText.substring(0, 60) : docText;
+                    String idKey = d.getId() != null ? d.getId() : snippetKey;
+
+                    if (seenIdentifiers.add(idKey)) {
+                        combined.add(d);
+                    }
+                }
+            }
         } catch (Exception e) {
-            // Si el filtro de metadato 'tipo' falla en Qdrant por falta de índice, continúa directo al fallback
-        }
-
-        // Fallback: búsqueda sin filtro de metadato (conservando threshold si hay documento adjunto)
-        if (docs == null || docs.isEmpty()) {
-            try {
-                var fallbackBuilder = SearchRequest.builder()
-                        .query(queryText)
-                        .topK(topK);
-                if (threshold > 0.0) {
-                    fallbackBuilder.similarityThreshold(threshold);
-                }
-                docs = vectorStore.similaritySearch(fallbackBuilder.build());
-            } catch (Exception ex) {
-                System.err.println("Error en búsqueda vectorial fallback [" + queryText + "]: " + ex.getMessage());
-            }
-        }
-
-        if (docs != null) {
-            for (Document d : docs) {
-                // Excluir cualquier documento del usuario que pudiera colarse en un fallback
-                Map<String, Object> meta = d.getMetadata();
-                if (meta != null && "usuario_adjunto".equalsIgnoreCase(String.valueOf(meta.get("tipo")))) {
-                    continue;
-                }
-
-                String docText = d.getText() != null ? d.getText().trim() : "";
-                String snippetKey = docText.length() > 60 ? docText.substring(0, 60) : docText;
-                String idKey = d.getId() != null ? d.getId() : snippetKey;
-
-                if (seenIdentifiers.add(idKey)) {
-                    combined.add(d);
-                }
-            }
+            System.err.println("Error en búsqueda vectorial directa [" + queryText + "]: " + e.getMessage());
         }
     }
 
